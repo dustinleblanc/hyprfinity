@@ -146,5 +146,5 @@ startup_timeout_secs = 10
   `hyprfinity --debug --verbose gamescope-up ...`
 - Check the debug log for:
   `raw monitors json`, `compute_span`, `gamescope final args`, and `reflow window selector`.
-- To force log output into this project directory:
-  `HYPRFINITY_DEBUG_LOG=/home/dustinleblanc/projects/hyprfinity/hyprfinity-debug.log hyprfinity --debug ...`
+- To force log output into your project directory:
+  `HYPRFINITY_DEBUG_LOG=/path/to/project/hyprfinity-debug.log hyprfinity --debug ...`
