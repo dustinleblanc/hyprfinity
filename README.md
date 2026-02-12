@@ -148,3 +148,11 @@ startup_timeout_secs = 10
   `raw monitors json`, `compute_span`, `gamescope final args`, and `reflow window selector`.
 - To force log output into your project directory:
   `HYPRFINITY_DEBUG_LOG=/path/to/project/hyprfinity-debug.log hyprfinity --debug ...`
+
+## TODO
+
+- Improve session exit UX so users can reliably leave Gamescope and always restore desktop state.
+- Research candidate approaches:
+  - Overlays
+  - Global keyboard commands
+  - Gamescope API integration points
