@@ -1,0 +1,13 @@
+# Rust
+/target/
+/Cargo.lock
+
+# IDEs
+.idea/
+.vscode/
+
+# OS generated files
+.DS_Store
+.Trash
+ehthumbs.db
+Thumbs.db
