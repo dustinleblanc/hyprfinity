@@ -1,4 +1,16 @@
 use clap::{Parser, Subcommand};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{
+    Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    widgets::{Block, Borders, Cell as TuiCell, Paragraph, Row as TuiRow, Table as TuiTable},
+};
 use serde::{Deserialize, Serialize};
 use skim::prelude::*;
 use std::collections::BTreeSet;
@@ -6,11 +18,15 @@ use std::{
     error::Error,
     fmt,
     io::Write,
+    path::PathBuf,
     process::{Command, Stdio},
     sync::Arc,
+    sync::Mutex,
+    sync::OnceLock,
     sync::atomic::{AtomicBool, Ordering},
     thread,
     time::Duration,
+    time::SystemTime,
 };
 
 #[derive(Debug)]
@@ -30,6 +46,12 @@ struct Cli {
     /// Enable verbose debug output.
     #[arg(long, global = true, default_value_t = false)]
     verbose: bool,
+    /// Enable diagnostic logging to a file.
+    #[arg(long, global = true, default_value_t = false)]
+    debug: bool,
+    /// Path to debug log file (used with --debug). Overrides HYPRFINITY_DEBUG_LOG.
+    #[arg(long, global = true)]
+    debug_log: Option<String>,
     /// Path to a config file (TOML). Defaults to $XDG_CONFIG_HOME/hyprfinity/config.toml.
     #[arg(long, global = true)]
     config: Option<String>,
@@ -73,7 +95,7 @@ enum Commands {
     GamescopeDown,
     /// Create a starter config file.
     ConfigInit {
-        /// Overwrite existing config if present.
+        /// Overwrite existing config if present (skip overwrite prompt).
         #[arg(long, default_value_t = false)]
         force: bool,
     },
@@ -133,10 +155,72 @@ struct GamescopeState {
 
 const GAMESCOPE_STATE_FILE_NAME: &str = "hyprfinity_gamescope_state.json";
 const DEFAULT_CONFIG_REL_PATH: &str = "hyprfinity/config.toml";
+const DEBUG_LOG_ENV_VAR: &str = "HYPRFINITY_DEBUG_LOG";
+const DEFAULT_DEBUG_LOG_PATH: &str = "/var/log/hyprfinity-debug.log";
+const FALLBACK_DEBUG_LOG_PATH: &str = "/tmp/hyprfinity-debug.log";
+
+static DEBUG_LOGGER: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
 
 fn get_gamescope_state_file_path() -> Result<std::path::PathBuf, Box<dyn Error>> {
     let temp_dir = std::env::temp_dir();
     Ok(temp_dir.join(GAMESCOPE_STATE_FILE_NAME))
+}
+
+fn init_debug_logging(enabled: bool, path_override: &Option<String>) -> Result<(), Box<dyn Error>> {
+    if !enabled {
+        return Ok(());
+    }
+    let chosen_path = if let Some(p) = path_override.as_ref() {
+        PathBuf::from(p)
+    } else if let Ok(p) = std::env::var(DEBUG_LOG_ENV_VAR) {
+        PathBuf::from(p)
+    } else {
+        PathBuf::from(DEFAULT_DEBUG_LOG_PATH)
+    };
+
+    let open_file = |path: &PathBuf| -> Result<std::fs::File, Box<dyn Error>> {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        Ok(std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)?)
+    };
+
+    let (path, file) = match open_file(&chosen_path) {
+        Ok(f) => (chosen_path, f),
+        Err(e) => {
+            let fallback = PathBuf::from(FALLBACK_DEBUG_LOG_PATH);
+            eprintln!(
+                "Hyprfinity: Failed to open debug log at {} ({}), falling back to {}",
+                chosen_path.display(),
+                e,
+                fallback.display()
+            );
+            let f = open_file(&fallback)?;
+            (fallback, f)
+        }
+    };
+
+    let _ = DEBUG_LOGGER.set(Mutex::new(file));
+    println!("Hyprfinity: Debug log enabled at {}", path.display());
+    debug_log_line("debug logging initialized");
+    Ok(())
+}
+
+fn debug_log_line(message: &str) {
+    let Some(lock) = DEBUG_LOGGER.get() else {
+        return;
+    };
+    let ts_ms = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut file) = lock.lock() {
+        let _ = writeln!(file, "[{}] {}", ts_ms, message);
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -197,47 +281,793 @@ fn resolve_config_path(
     }
 }
 
+#[derive(Debug, Clone)]
+struct AutoTuneProfile {
+    render_scale: f32,
+    reason: String,
+}
+
+fn detect_total_memory_gib() -> Option<f32> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = meminfo.lines().find(|l| l.starts_with("MemTotal:"))?;
+    let kb = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse::<u64>().ok())?;
+    Some(kb as f32 / 1024.0 / 1024.0)
+}
+
+fn detect_span_pixels() -> Option<i64> {
+    let (w, h) = detect_span_size()?;
+    Some(i64::from(w) * i64::from(h))
+}
+
+fn detect_span_size() -> Option<(i32, i32)> {
+    let monitors = get_monitors(false).ok()?;
+    let (_, _, w, h) = compute_monitor_span(&monitors).ok()?;
+    Some((w, h))
+}
+
+fn detect_gpu_models() -> Vec<String> {
+    let output = match Command::new("lspci").arg("-nn").output() {
+        Ok(out) => out,
+        Err(_) => return Vec::new(),
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let candidates: Vec<String> = stdout
+        .lines()
+        .filter(|line| {
+            line.contains("VGA compatible controller")
+                || line.contains("3D controller")
+                || line.contains("Display controller")
+        })
+        .map(|line| {
+            line.split_once(':')
+                .map(|(_, rest)| rest.trim().to_string())
+                .unwrap_or_else(|| line.trim().to_string())
+        })
+        .collect();
+    candidates
+}
+
+fn gpu_model_score(model: &str) -> i32 {
+    let lc = model.to_lowercase();
+    let mut score = 0;
+
+    if lc.contains("nvidia") || lc.contains("geforce") || lc.contains("rtx") || lc.contains("gtx") {
+        score += 50;
+    }
+    if lc.contains("amd")
+        || lc.contains("ati")
+        || lc.contains("radeon")
+        || lc.contains("rx ")
+        || lc.contains("rx5")
+        || lc.contains("rx 5")
+        || lc.contains("rx6")
+        || lc.contains("rx 6")
+        || lc.contains("rx7")
+        || lc.contains("rx 7")
+    {
+        score += 45;
+    }
+    if lc.contains("intel") {
+        score += 10;
+        if lc.contains("arc") {
+            score += 20;
+        } else {
+            score -= 8;
+        }
+    }
+
+    if lc.contains("uhd")
+        || lc.contains("hd graphics")
+        || lc.contains("iris")
+        || lc.contains("vega 8")
+        || lc.contains("vega 11")
+    {
+        score -= 6;
+    }
+
+    if lc.contains("rx 580") || lc.contains("rx580") {
+        score += 5;
+    }
+
+    score
+}
+
+fn detect_gpu_model() -> Option<String> {
+    let candidates = detect_gpu_models();
+    candidates
+        .into_iter()
+        .max_by_key(|model| gpu_model_score(model))
+}
+
+fn detect_gpu_vram_gib() -> Option<f32> {
+    let mut best_vram_bytes: Option<u64> = None;
+    let entries = std::fs::read_dir("/sys/class/drm").ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("card") {
+            continue;
+        }
+        if name.contains('-') {
+            continue;
+        }
+        let vram_path = entry.path().join("device/mem_info_vram_total");
+        let value = std::fs::read_to_string(vram_path).ok();
+        if let Some(v) = value.and_then(|s| s.trim().parse::<u64>().ok()) {
+            best_vram_bytes = Some(best_vram_bytes.map_or(v, |b| b.max(v)));
+        }
+    }
+    best_vram_bytes.map(|bytes| bytes as f32 / 1024.0 / 1024.0 / 1024.0)
+}
+
+fn gpu_scale_adjustment(
+    gpu_model: Option<&str>,
+    gpu_vram_gib: Option<f32>,
+    span_pixels: Option<i64>,
+) -> (f32, String) {
+    let mut delta = 0.0_f32;
+    let mut reasons: Vec<String> = Vec::new();
+
+    if let Some(vram) = gpu_vram_gib {
+        if vram <= 4.0 {
+            delta -= 0.20;
+            reasons.push(format!("VRAM {:.1}GiB (very low)", vram));
+        } else if vram <= 6.0 {
+            delta -= 0.15;
+            reasons.push(format!("VRAM {:.1}GiB (low)", vram));
+        } else if vram <= 8.0 {
+            delta -= 0.10;
+            reasons.push(format!("VRAM {:.1}GiB (mid)", vram));
+        } else if vram >= 16.0 {
+            delta += 0.08;
+            reasons.push(format!("VRAM {:.1}GiB (high)", vram));
+        } else if vram >= 12.0 {
+            delta += 0.05;
+            reasons.push(format!("VRAM {:.1}GiB (good)", vram));
+        }
+    }
+
+    if let Some(model) = gpu_model {
+        let lc = model.to_lowercase();
+        if lc.contains("rx 580")
+            || lc.contains("rx580")
+            || lc.contains("rx 570")
+            || lc.contains("rx570")
+            || lc.contains("rx 560")
+            || lc.contains("rx560")
+            || lc.contains("rx 480")
+            || lc.contains("rx480")
+            || lc.contains("rx 470")
+            || lc.contains("rx470")
+            || lc.contains("rx 460")
+            || lc.contains("rx460")
+        {
+            delta -= 0.15;
+            reasons.push("older AMD Polaris class".to_string());
+        } else if lc.contains("intel") && !lc.contains("arc") {
+            delta -= 0.12;
+            reasons.push("integrated Intel graphics".to_string());
+        } else if lc.contains("vega 8") || lc.contains("vega 11") {
+            delta -= 0.10;
+            reasons.push("integrated Vega graphics".to_string());
+        } else if lc.contains("rtx 40") || lc.contains("rx 7") {
+            delta += 0.08;
+            reasons.push("newer high-end GPU tier".to_string());
+        }
+    }
+
+    if span_pixels.unwrap_or(0) > 10_000_000 && delta < 0.0 {
+        delta -= 0.05;
+        reasons.push("large multi-monitor span".to_string());
+    }
+
+    delta = delta.clamp(-0.35, 0.12);
+
+    let reason = if reasons.is_empty() {
+        "no strong GPU adjustment".to_string()
+    } else {
+        reasons.join(", ")
+    };
+    (delta, reason)
+}
+
+fn detect_auto_tune_profile() -> AutoTuneProfile {
+    let cpu_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let mem_gib = detect_total_memory_gib();
+    let span_pixels = detect_span_pixels();
+    let gpu_model = detect_gpu_model();
+    let gpu_vram_gib = detect_gpu_vram_gib();
+
+    let mut scale = match span_pixels {
+        Some(p) if p > 16_000_000 => 0.60_f32,
+        Some(p) if p > 12_000_000 => 0.67_f32,
+        Some(p) if p > 8_500_000 => 0.75_f32,
+        Some(p) if p > 5_500_000 => 0.85_f32,
+        _ => 1.0_f32,
+    };
+
+    let mem = mem_gib.unwrap_or(16.0);
+    if cpu_threads >= 16 && mem >= 32.0 {
+        scale += 0.10;
+    } else if cpu_threads >= 12 && mem >= 24.0 {
+        scale += 0.05;
+    } else if cpu_threads <= 4 || mem < 8.0 {
+        scale -= 0.15;
+    } else if cpu_threads <= 6 || mem < 12.0 {
+        scale -= 0.10;
+    }
+
+    let (gpu_delta, gpu_reason) =
+        gpu_scale_adjustment(gpu_model.as_deref(), gpu_vram_gib, span_pixels);
+    scale += gpu_delta;
+
+    scale = (scale * 100.0).round() / 100.0;
+    scale = scale.clamp(0.50, 1.0);
+
+    let reason = format!(
+        "auto-tuned using CPU threads={}, RAM={} GiB, span_pixels={}, GPU='{}', GPU_VRAM={} GiB, gpu_adjustment={:+.2} ({})",
+        cpu_threads,
+        mem_gib
+            .map(|v| format!("{:.1}", v))
+            .unwrap_or_else(|| "unknown".to_string()),
+        span_pixels
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        gpu_model.unwrap_or_else(|| "unknown".to_string()),
+        gpu_vram_gib
+            .map(|v| format!("{:.1}", v))
+            .unwrap_or_else(|| "unknown".to_string()),
+        gpu_delta,
+        gpu_reason
+    );
+
+    AutoTuneProfile {
+        render_scale: scale,
+        reason,
+    }
+}
+
+fn default_config_values(auto: &AutoTuneProfile) -> Config {
+    Config {
+        gamescope_args: Some(vec!["-r".to_string(), "60".to_string()]),
+        default_command: None,
+        no_pin: Some(false),
+        pick: Some(false),
+        hide_waybar: Some(true),
+        pick_size: Some(false),
+        render_scale: Some(auto.render_scale),
+        virtual_width: None,
+        virtual_height: None,
+        output_width: None,
+        output_height: None,
+        startup_timeout_secs: Some(10),
+    }
+}
+
+fn format_toml_string_array(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|s| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string()))
+        .collect::<Vec<String>>()
+        .join(", ")
+}
+
+fn render_config_template(config: &Config, auto_reason: &str) -> String {
+    let gamescope_args = config
+        .gamescope_args
+        .clone()
+        .unwrap_or_else(|| vec!["-r".to_string(), "60".to_string()]);
+    let default_command_line = config
+        .default_command
+        .clone()
+        .map(|cmd| format!("default_command = [{}]", format_toml_string_array(&cmd)))
+        .unwrap_or_else(|| "# default_command = [\"steam\", \"-applaunch\", \"620\"]".to_string());
+    let no_pin = config.no_pin.unwrap_or(false);
+    let pick = config.pick.unwrap_or(false);
+    let hide_waybar = config.hide_waybar.unwrap_or(true);
+    let pick_size = config.pick_size.unwrap_or(false);
+    let render_scale = config.render_scale.unwrap_or(1.0);
+    let startup_timeout_secs = config.startup_timeout_secs.unwrap_or(10);
+
+    let virtual_width_line = config
+        .virtual_width
+        .map(|v| format!("virtual_width = {}", v))
+        .unwrap_or_else(|| "# virtual_width = 5760".to_string());
+    let virtual_height_line = config
+        .virtual_height
+        .map(|v| format!("virtual_height = {}", v))
+        .unwrap_or_else(|| "# virtual_height = 1080".to_string());
+    let output_width_line = config
+        .output_width
+        .map(|v| format!("output_width = {}", v))
+        .unwrap_or_else(|| "# output_width = 7680".to_string());
+    let output_height_line = config
+        .output_height
+        .map(|v| format!("output_height = {}", v))
+        .unwrap_or_else(|| "# output_height = 1440".to_string());
+
+    format!(
+        r#"# Hyprfinity config
+
+# Default gamescope args (used when no args are provided on the CLI)
+gamescope_args = [{gamescope_args}]
+
+# Optional default game/app command (appended if no `--` command is provided)
+{default_command_line}
+
+# Defaults for CLI flags
+no_pin = {no_pin}
+pick = {pick}
+hide_waybar = {hide_waybar}
+pick_size = {pick_size}
+# Internal render scale relative to output span; 1.0 = native span.
+# {auto_reason}
+render_scale = {render_scale}
+# Optional explicit internal render size (when set, these take precedence over render_scale).
+{virtual_width_line}
+{virtual_height_line}
+# Optional explicit output size for Gamescope (-W/-H). Default is full monitor span.
+{output_width_line}
+{output_height_line}
+startup_timeout_secs = {startup_timeout_secs}
+"#,
+        gamescope_args = format_toml_string_array(&gamescope_args),
+        default_command_line = default_command_line,
+        no_pin = no_pin,
+        pick = pick,
+        hide_waybar = hide_waybar,
+        pick_size = pick_size,
+        auto_reason = auto_reason,
+        render_scale = render_scale,
+        virtual_width_line = virtual_width_line,
+        virtual_height_line = virtual_height_line,
+        output_width_line = output_width_line,
+        output_height_line = output_height_line,
+        startup_timeout_secs = startup_timeout_secs,
+    )
+}
+
+fn prompt_yes_no(prompt: &str, default: bool) -> Result<bool, Box<dyn Error>> {
+    loop {
+        let hint = if default { "Y/n" } else { "y/N" };
+        print!("{} [{}]: ", prompt, hint);
+        std::io::stdout().flush()?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let normalized = input.trim().to_lowercase();
+
+        if normalized.is_empty() {
+            return Ok(default);
+        }
+        if normalized == "y" || normalized == "yes" {
+            return Ok(true);
+        }
+        if normalized == "n" || normalized == "no" {
+            return Ok(false);
+        }
+
+        println!("Please answer y/yes or n/no.");
+    }
+}
+
+fn format_optional_size(width: Option<i32>, height: Option<i32>) -> String {
+    match (width, height) {
+        (Some(w), Some(h)) => format!("{}x{}", w, h),
+        (Some(w), None) => format!("{}x(auto)", w),
+        (None, Some(h)) => format!("(auto)x{}", h),
+        (None, None) => "auto".to_string(),
+    }
+}
+
+fn print_kv_table(title: &str, rows: Vec<(&str, String)>) {
+    println!("Hyprfinity: {}", title);
+    let key_width = rows
+        .iter()
+        .map(|(k, _)| k.len())
+        .max()
+        .unwrap_or(3)
+        .max("Key".len());
+    let val_width = rows
+        .iter()
+        .map(|(_, v)| v.len())
+        .max()
+        .unwrap_or(5)
+        .max("Value".len());
+
+    let sep = format!("+-{}-+-{}-+", "-".repeat(key_width), "-".repeat(val_width));
+    println!("{}", sep);
+    println!(
+        "| {:<key_width$} | {:<val_width$} |",
+        "Key",
+        "Value",
+        key_width = key_width,
+        val_width = val_width
+    );
+    println!("{}", sep);
+    for (k, v) in rows {
+        println!(
+            "| {:<key_width$} | {:<val_width$} |",
+            k,
+            v,
+            key_width = key_width,
+            val_width = val_width
+        );
+    }
+    println!("{}", sep);
+}
+
+fn print_config_table(title: &str, config: &Config) {
+    print_kv_table(
+        title,
+        vec![
+            (
+                "gamescope_args",
+                format!("{:?}", config.gamescope_args.clone().unwrap_or_default()),
+            ),
+            (
+                "default_command",
+                format!("{:?}", config.default_command.clone().unwrap_or_default()),
+            ),
+            ("no_pin", config.no_pin.unwrap_or(false).to_string()),
+            ("pick", config.pick.unwrap_or(false).to_string()),
+            (
+                "hide_waybar",
+                config.hide_waybar.unwrap_or(true).to_string(),
+            ),
+            ("pick_size", config.pick_size.unwrap_or(false).to_string()),
+            (
+                "render_scale",
+                config.render_scale.unwrap_or(1.0).to_string(),
+            ),
+            (
+                "virtual_size",
+                format_optional_size(config.virtual_width, config.virtual_height),
+            ),
+            (
+                "output_size",
+                format_optional_size(config.output_width, config.output_height),
+            ),
+            (
+                "startup_timeout_secs",
+                config.startup_timeout_secs.unwrap_or(10).to_string(),
+            ),
+        ],
+    );
+}
+
+fn print_effective_launch_table(title: &str, launch: &LaunchSettings) {
+    print_kv_table(
+        title,
+        vec![
+            ("gamescope_args", format!("{:?}", launch.args)),
+            ("no_pin", launch.no_pin.to_string()),
+            ("pick", launch.pick.to_string()),
+            ("hide_waybar", launch.hide_waybar.to_string()),
+            ("pick_size", launch.pick_size.to_string()),
+            ("render_scale", launch.render_scale.to_string()),
+            (
+                "virtual_size",
+                format_optional_size(launch.virtual_width, launch.virtual_height),
+            ),
+            (
+                "output_size",
+                format_optional_size(launch.output_width, launch.output_height),
+            ),
+            ("startup_timeout_secs", launch.timeout.to_string()),
+        ],
+    );
+}
+
+fn apply_editor_defaults(mut config: Config, auto_scale: f32) -> Config {
+    if config.gamescope_args.is_none() {
+        config.gamescope_args = Some(vec!["-r".to_string(), "60".to_string()]);
+    }
+    if config.no_pin.is_none() {
+        config.no_pin = Some(false);
+    }
+    if config.pick.is_none() {
+        config.pick = Some(false);
+    }
+    if config.hide_waybar.is_none() {
+        config.hide_waybar = Some(true);
+    }
+    if config.pick_size.is_none() {
+        config.pick_size = Some(false);
+    }
+    if config.render_scale.is_none() {
+        config.render_scale = Some(auto_scale);
+    }
+    if config.startup_timeout_secs.is_none() {
+        config.startup_timeout_secs = Some(10);
+    }
+    config
+}
+
+fn push_unique_size_option(options: &mut Vec<Option<(i32, i32)>>, candidate: Option<(i32, i32)>) {
+    if !options.contains(&candidate) {
+        options.push(candidate);
+    }
+}
+
+fn output_size_options(span: Option<(i32, i32)>) -> Vec<Option<(i32, i32)>> {
+    let mut options = vec![None];
+    push_unique_size_option(&mut options, span);
+    push_unique_size_option(&mut options, Some((1920, 1080)));
+    push_unique_size_option(&mut options, Some((2560, 1440)));
+    push_unique_size_option(&mut options, Some((3440, 1440)));
+    push_unique_size_option(&mut options, Some((3840, 2160)));
+    options
+}
+
+fn virtual_size_options(span: Option<(i32, i32)>) -> Vec<Option<(i32, i32)>> {
+    let mut options = vec![None];
+    push_unique_size_option(&mut options, Some((1280, 720)));
+    push_unique_size_option(&mut options, Some((1600, 900)));
+    push_unique_size_option(&mut options, Some((1920, 1080)));
+    if let Some((sw, sh)) = span {
+        push_unique_size_option(&mut options, Some((sw, sh)));
+    }
+    options
+}
+
+fn cycle_size_setting(
+    width: &mut Option<i32>,
+    height: &mut Option<i32>,
+    options: &[Option<(i32, i32)>],
+    forward: bool,
+) {
+    let current = match (*width, *height) {
+        (Some(w), Some(h)) => Some((w, h)),
+        _ => None,
+    };
+    let idx = options.iter().position(|o| *o == current).unwrap_or(0);
+    let next_idx = if forward {
+        (idx + 1) % options.len()
+    } else if idx == 0 {
+        options.len() - 1
+    } else {
+        idx - 1
+    };
+    match options[next_idx] {
+        Some((w, h)) => {
+            *width = Some(w);
+            *height = Some(h);
+        }
+        None => {
+            *width = None;
+            *height = None;
+        }
+    }
+}
+
+fn edit_config_tui(
+    title: &str,
+    config: Config,
+    auto_reason: &str,
+    span: Option<(i32, i32)>,
+) -> Result<Option<Config>, Box<dyn Error>> {
+    let mut config = config;
+    let mut selected: usize = 0;
+    let output_opts = output_size_options(span);
+    let virtual_opts = virtual_size_options(span);
+
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let result = (|| -> Result<Option<Config>, Box<dyn Error>> {
+        loop {
+            terminal.draw(|f| {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(4),
+                        Constraint::Min(8),
+                        Constraint::Length(3),
+                    ])
+                    .split(f.area());
+
+                let header = Paragraph::new(format!(
+                    "{}\nAuto recommendation: {}\nSpan: {}",
+                    title,
+                    auto_reason,
+                    span.map(|(w, h)| format!("{}x{}", w, h))
+                        .unwrap_or_else(|| "unknown".to_string())
+                ))
+                .block(Block::default().borders(Borders::ALL).title("Context"));
+                f.render_widget(header, chunks[0]);
+
+                let rows = vec![
+                    (
+                        "render_scale",
+                        format!("{:.2}", config.render_scale.unwrap_or(1.0)),
+                    ),
+                    (
+                        "hide_waybar",
+                        config.hide_waybar.unwrap_or(true).to_string(),
+                    ),
+                    ("pick_size", config.pick_size.unwrap_or(false).to_string()),
+                    (
+                        "output_size",
+                        format_optional_size(config.output_width, config.output_height),
+                    ),
+                    (
+                        "virtual_size",
+                        format_optional_size(config.virtual_width, config.virtual_height),
+                    ),
+                    ("save", "Write config and exit".to_string()),
+                    ("cancel", "Discard changes".to_string()),
+                ];
+
+                let table_rows = rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (k, v))| {
+                        let style = if idx == selected {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        };
+                        TuiRow::new(vec![TuiCell::from(k), TuiCell::from(v)]).style(style)
+                    })
+                    .collect::<Vec<_>>();
+
+                let table =
+                    TuiTable::new(table_rows, [Constraint::Length(18), Constraint::Min(24)])
+                        .header(
+                            TuiRow::new(vec!["Field", "Value"])
+                                .style(Style::default().add_modifier(Modifier::BOLD)),
+                        )
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title("Config Editor"),
+                        );
+                f.render_widget(table, chunks[1]);
+
+                let footer = Paragraph::new(
+                    "Keys: ↑/↓ select  ←/→ change  Enter activate/toggle  s save  q/Esc cancel",
+                )
+                .block(Block::default().borders(Borders::ALL).title("Help"));
+                f.render_widget(footer, chunks[2]);
+            })?;
+
+            if event::poll(Duration::from_millis(200))? {
+                let ev = event::read()?;
+                if let Event::Key(key) = ev {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
+                        KeyCode::Char('s') => return Ok(Some(config.clone())),
+                        KeyCode::Down => selected = (selected + 1) % 7,
+                        KeyCode::Up => {
+                            selected = if selected == 0 { 6 } else { selected - 1 };
+                        }
+                        KeyCode::Left => match selected {
+                            0 => {
+                                let s = (config.render_scale.unwrap_or(1.0) - 0.05).clamp(0.1, 1.0);
+                                config.render_scale = Some((s * 100.0).round() / 100.0);
+                            }
+                            1 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
+                            2 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
+                            3 => cycle_size_setting(
+                                &mut config.output_width,
+                                &mut config.output_height,
+                                &output_opts,
+                                false,
+                            ),
+                            4 => cycle_size_setting(
+                                &mut config.virtual_width,
+                                &mut config.virtual_height,
+                                &virtual_opts,
+                                false,
+                            ),
+                            _ => {}
+                        },
+                        KeyCode::Right => match selected {
+                            0 => {
+                                let s = (config.render_scale.unwrap_or(1.0) + 0.05).clamp(0.1, 1.0);
+                                config.render_scale = Some((s * 100.0).round() / 100.0);
+                            }
+                            1 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
+                            2 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
+                            3 => cycle_size_setting(
+                                &mut config.output_width,
+                                &mut config.output_height,
+                                &output_opts,
+                                true,
+                            ),
+                            4 => cycle_size_setting(
+                                &mut config.virtual_width,
+                                &mut config.virtual_height,
+                                &virtual_opts,
+                                true,
+                            ),
+                            _ => {}
+                        },
+                        KeyCode::Enter => match selected {
+                            1 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
+                            2 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
+                            3 => cycle_size_setting(
+                                &mut config.output_width,
+                                &mut config.output_height,
+                                &output_opts,
+                                true,
+                            ),
+                            4 => cycle_size_setting(
+                                &mut config.virtual_width,
+                                &mut config.virtual_height,
+                                &virtual_opts,
+                                true,
+                            ),
+                            5 => return Ok(Some(config.clone())),
+                            6 => return Ok(None),
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+    })();
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+    result
+}
+
 fn write_default_config(path_override: &Option<String>, force: bool) -> Result<(), Box<dyn Error>> {
     let path = resolve_config_path(path_override)?;
 
     if path.exists() && !force {
-        return Err(MyError(format!(
-            "Config already exists at {} (use --force to overwrite).",
-            path.display()
-        ))
-        .into());
+        let should_overwrite = prompt_yes_no(
+            &format!("Config already exists at {}. Overwrite it?", path.display()),
+            false,
+        )?;
+        if !should_overwrite {
+            println!("Hyprfinity: Keeping existing config unchanged.");
+            return Ok(());
+        }
     }
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let contents = r#"# Hyprfinity config
+    let auto = detect_auto_tune_profile();
+    let mut config = apply_editor_defaults(default_config_values(&auto), auto.render_scale);
+    let span = detect_span_size();
 
-# Default gamescope args (used when no args are provided on the CLI)
-gamescope_args = ["-r", "60"]
+    if !force {
+        match edit_config_tui("Config Init", config.clone(), &auto.reason, span)? {
+            Some(edited) => config = apply_editor_defaults(edited, auto.render_scale),
+            None => {
+                println!("Hyprfinity: Config init cancelled.");
+                return Ok(());
+            }
+        }
+    }
 
-# Default game/app command (appended if no `--` command is provided)
-default_command = ["steam", "-applaunch", "620"]
-
-# Defaults for CLI flags
-no_pin = false
-pick = false
-hide_waybar = true
-pick_size = false
-# Internal render scale relative to output span; 1.0 = native span.
-render_scale = 1.0
-# Optional explicit internal render size (when set, these take precedence over render_scale).
-# virtual_width = 5760
-# virtual_height = 1080
-# Optional explicit output size for Gamescope (-W/-H). Default is full monitor span.
-# output_width = 7680
-# output_height = 1440
-startup_timeout_secs = 10
-"#;
+    let contents = render_config_template(&config, &auto.reason);
 
     std::fs::write(&path, contents)?;
     println!("Hyprfinity: Wrote config to {}", path.display());
+    print_config_table("Final Config Defaults", &config);
     Ok(())
 }
 
@@ -270,41 +1100,8 @@ fn show_config(
     );
 
     println!("Hyprfinity: Config path: {}", path.display());
-    println!("Hyprfinity: Effective values (after CLI overrides):");
-    println!("  gamescope_args = {:?}", launch.args);
-    println!("  no_pin = {}", launch.no_pin);
-    println!("  pick = {}", launch.pick);
-    println!("  hide_waybar = {}", launch.hide_waybar);
-    println!("  pick_size = {}", launch.pick_size);
-    println!("  render_scale = {}", launch.render_scale);
-    println!("  virtual_width = {:?}", launch.virtual_width);
-    println!("  virtual_height = {:?}", launch.virtual_height);
-    println!("  output_width = {:?}", launch.output_width);
-    println!("  output_height = {:?}", launch.output_height);
-    println!("  startup_timeout_secs = {}", launch.timeout);
-
-    println!("Hyprfinity: Raw config values:");
-    println!(
-        "  gamescope_args = {:?}",
-        config.gamescope_args.unwrap_or_default()
-    );
-    println!(
-        "  default_command = {:?}",
-        config.default_command.unwrap_or_default()
-    );
-    println!("  no_pin = {}", config.no_pin.unwrap_or(false));
-    println!("  pick = {}", config.pick.unwrap_or(false));
-    println!("  hide_waybar = {}", config.hide_waybar.unwrap_or(true));
-    println!("  pick_size = {}", config.pick_size.unwrap_or(false));
-    println!("  render_scale = {}", config.render_scale.unwrap_or(1.0));
-    println!("  virtual_width = {:?}", config.virtual_width);
-    println!("  virtual_height = {:?}", config.virtual_height);
-    println!("  output_width = {:?}", config.output_width);
-    println!("  output_height = {:?}", config.output_height);
-    println!(
-        "  startup_timeout_secs = {}",
-        config.startup_timeout_secs.unwrap_or(10)
-    );
+    print_effective_launch_table("Effective Values (after CLI overrides)", &launch);
+    print_config_table("Raw Config Values", &config);
     Ok(())
 }
 
@@ -325,6 +1122,7 @@ fn load_gamescope_state() -> Result<GamescopeState, Box<dyn Error>> {
 }
 
 fn execute_hyprctl(args: &[&str], verbose: bool) -> Result<(), Box<dyn Error>> {
+    debug_log_line(&format!("hyprctl {:?} (void)", args));
     if verbose {
         println!(
             "Hyprfinity (DEBUG): Executing hyprctl with args: {:?}",
@@ -341,6 +1139,12 @@ fn execute_hyprctl(args: &[&str], verbose: bool) -> Result<(), Box<dyn Error>> {
         println!("Hyprfinity (DEBUG): hyprctl stderr: {}", stderr.trim());
         println!("Hyprfinity (DEBUG): hyprctl exit status: {}", output.status);
     }
+    debug_log_line(&format!(
+        "hyprctl status={} stdout='{}' stderr='{}'",
+        output.status,
+        stdout.trim(),
+        stderr.trim()
+    ));
 
     if !output.status.success() {
         return Err(MyError(format!("hyprctl failed for args {:?}: {}", args, stderr)).into());
@@ -349,6 +1153,7 @@ fn execute_hyprctl(args: &[&str], verbose: bool) -> Result<(), Box<dyn Error>> {
 }
 
 fn execute_hyprctl_output(args: &[&str], verbose: bool) -> Result<String, Box<dyn Error>> {
+    debug_log_line(&format!("hyprctl {:?} (capture)", args));
     if verbose {
         println!(
             "Hyprfinity (DEBUG): Executing hyprctl with args: {:?}",
@@ -365,6 +1170,12 @@ fn execute_hyprctl_output(args: &[&str], verbose: bool) -> Result<String, Box<dy
         println!("Hyprfinity (DEBUG): hyprctl stderr: {}", stderr.trim());
         println!("Hyprfinity (DEBUG): hyprctl exit status: {}", output.status);
     }
+    debug_log_line(&format!(
+        "hyprctl status={} stdout='{}' stderr='{}'",
+        output.status,
+        stdout.trim(),
+        stderr.trim()
+    ));
 
     if !output.status.success() {
         return Err(MyError(format!("hyprctl failed for args {:?}: {}", args, stderr)).into());
@@ -374,6 +1185,7 @@ fn execute_hyprctl_output(args: &[&str], verbose: bool) -> Result<String, Box<dy
 
 fn get_monitors(verbose: bool) -> Result<Vec<Monitor>, Box<dyn Error>> {
     let stdout = execute_hyprctl_output(&["monitors", "-j"], verbose)?;
+    debug_log_line(&format!("raw monitors json: {}", stdout.trim()));
     let monitors: Vec<Monitor> = serde_json::from_str(&stdout)
         .map_err(|e| MyError(format!("Failed to parse hyprctl output: {}", e)))?;
 
@@ -395,6 +1207,24 @@ fn compute_monitor_span(monitors: &[Monitor]) -> Result<(i32, i32, i32, i32), Bo
 
     let span_width = max_x - min_x;
     let span_height = max_y - min_y;
+    let monitor_dump = monitors
+        .iter()
+        .map(|m| {
+            format!(
+                "{}:{}x{}@{},{}",
+                m.name.clone().unwrap_or_else(|| "unknown".to_string()),
+                m.width,
+                m.height,
+                m.x,
+                m.y
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    debug_log_line(&format!(
+        "compute_span monitors=[{}] => origin=({}, {}), size={}x{}",
+        monitor_dump, min_x, min_y, span_width, span_height
+    ));
 
     Ok((min_x, min_y, span_width, span_height))
 }
@@ -402,6 +1232,8 @@ fn compute_monitor_span(monitors: &[Monitor]) -> Result<(i32, i32, i32, i32), Bo
 #[derive(Debug, Deserialize)]
 struct Client {
     pid: i32,
+    #[serde(default)]
+    address: Option<String>,
     #[serde(default)]
     at: Option<[i32; 2]>,
     #[serde(default)]
@@ -428,6 +1260,26 @@ fn wait_for_client_pid(pid: u32, timeout_secs: u64, verbose: bool) -> Result<(),
     .into())
 }
 
+fn primary_client_for_pid<'a>(clients: &'a [Client], pid: u32) -> Option<&'a Client> {
+    clients
+        .iter()
+        .filter(|c| c.pid == pid as i32)
+        .max_by_key(|c| {
+            let (w, h) = c.size.map(|s| (s[0], s[1])).unwrap_or((0, 0));
+            i64::from(w.max(0)) * i64::from(h.max(0))
+        })
+}
+
+fn get_primary_window_selector(pid: u32, verbose: bool) -> Result<String, Box<dyn Error>> {
+    let stdout = execute_hyprctl_output(&["clients", "-j"], verbose)?;
+    let clients: Vec<Client> = serde_json::from_str(&stdout)
+        .map_err(|e| MyError(format!("Failed to parse hyprctl clients output: {}", e)))?;
+    let selector = primary_client_for_pid(&clients, pid)
+        .and_then(|c| c.address.as_ref().map(|a| format!("address:{}", a)))
+        .unwrap_or_else(|| format!("pid:{}", pid));
+    Ok(selector)
+}
+
 fn get_client_geometry(
     pid: u32,
     verbose: bool,
@@ -435,7 +1287,7 @@ fn get_client_geometry(
     let stdout = execute_hyprctl_output(&["clients", "-j"], verbose)?;
     let clients: Vec<Client> = serde_json::from_str(&stdout)
         .map_err(|e| MyError(format!("Failed to parse hyprctl clients output: {}", e)))?;
-    let client = clients.iter().find(|c| c.pid == pid as i32);
+    let client = primary_client_for_pid(&clients, pid);
     if let Some(c) = client {
         if let (Some(at), Some(size)) = (c.at, c.size) {
             return Ok(Some((at[0], at[1], size[0], size[1])));
@@ -1026,6 +1878,13 @@ fn gamescope_up(
     output_height: Option<i32>,
     verbose: bool,
 ) -> Result<(), Box<dyn Error>> {
+    debug_log_line("gamescope_up begin");
+    let waybar_was_stopped = if hide_waybar {
+        maybe_stop_waybar(verbose)?
+    } else {
+        false
+    };
+
     let monitors = get_monitors(verbose)?;
     let (span_x, span_y, span_width, span_height) = compute_monitor_span(&monitors)?;
 
@@ -1033,15 +1892,17 @@ fn gamescope_up(
         "Hyprfinity: Computed monitor span: origin=({}, {}), size={}x{}",
         span_x, span_y, span_width, span_height
     );
-
-    let waybar_was_stopped = if hide_waybar {
-        maybe_stop_waybar(verbose)?
-    } else {
-        false
-    };
+    debug_log_line(&format!(
+        "computed span origin=({}, {}), size={}x{}",
+        span_x, span_y, span_width, span_height
+    ));
 
     let gamescope_args = ensure_game_command(gamescope_args.to_vec(), pick)?;
     let output = derive_output_size(span_width, span_height, output_width, output_height);
+    debug_log_line(&format!(
+        "derived output size={}x{} from span={}x{} with config output={:?}x{:?}",
+        output.0, output.1, span_width, span_height, output_width, output_height
+    ));
     let mut internal = derive_internal_size(
         output.0,
         output.1,
@@ -1073,6 +1934,7 @@ fn gamescope_up(
         "Hyprfinity: Launching gamescope with args: {:?}",
         final_args
     );
+    debug_log_line(&format!("gamescope final args: {:?}", final_args));
 
     let mut cmd = Command::new("gamescope");
     cmd.args(&final_args);
@@ -1086,7 +1948,9 @@ fn gamescope_up(
 
     wait_for_client_pid(gamescope_pid, startup_timeout_secs, verbose)?;
 
-    let window = format!("pid:{}", gamescope_pid);
+    let window = get_primary_window_selector(gamescope_pid, verbose)
+        .unwrap_or_else(|_| format!("pid:{}", gamescope_pid));
+    debug_log_line(&format!("initial window selector: {}", window));
     execute_hyprctl(&["dispatch", "setfloating", &window], verbose)?;
     fit_window_to_span(
         gamescope_pid,
@@ -1129,6 +1993,7 @@ fn gamescope_up(
     }
 
     println!("Hyprfinity: Gamescope is running. Press Ctrl+C to stop.");
+    let mut reflow_tick: u64 = 0;
     loop {
         if let Ok(Some(status)) = child.try_wait() {
             println!("Hyprfinity: Gamescope exited with status {}.", status);
@@ -1139,6 +2004,28 @@ fn gamescope_up(
             let _ = std::fs::remove_file(&state_file_path);
             break;
         }
+
+        // Gamescope can recreate/reconfigure clients after startup.
+        // Periodically re-target the primary client and enforce full-span geometry.
+        if reflow_tick % 2 == 0 {
+            if let Ok(window) = get_primary_window_selector(gamescope_pid, verbose) {
+                debug_log_line(&format!("reflow window selector: {}", window));
+                let _ = execute_hyprctl(&["dispatch", "setfloating", &window], verbose);
+                let _ = fit_window_to_span(
+                    gamescope_pid,
+                    &window,
+                    span_x,
+                    span_y,
+                    span_width,
+                    span_height,
+                    verbose,
+                );
+                if !no_pin {
+                    let _ = execute_hyprctl(&["dispatch", "pin", &window], verbose);
+                }
+            }
+        }
+        reflow_tick = reflow_tick.wrapping_add(1);
         thread::sleep(Duration::from_secs(1));
     }
 
@@ -1223,126 +2110,32 @@ fn write_config(path_override: &Option<String>, config: &Config) -> Result<(), B
     Ok(())
 }
 
-fn prompt_line(prompt: &str, default: &str) -> Result<String, Box<dyn Error>> {
-    print!("{} [{}]: ", prompt, default);
-    std::io::stdout().flush()?;
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        Ok(default.to_string())
-    } else {
-        Ok(trimmed.to_string())
-    }
-}
-
-fn parse_resolution(input: &str) -> Result<(i32, i32), Box<dyn Error>> {
-    let normalized = input.replace('x', " ");
-    let parts: Vec<&str> = normalized.split_whitespace().collect();
-    if parts.len() != 2 {
-        return Err(MyError("Expected resolution format WIDTHxHEIGHT.".to_string()).into());
-    }
-    let w: i32 = parts[0]
-        .parse()
-        .map_err(|e| MyError(format!("Invalid width '{}': {}", parts[0], e)))?;
-    let h: i32 = parts[1]
-        .parse()
-        .map_err(|e| MyError(format!("Invalid height '{}': {}", parts[1], e)))?;
-    if w <= 0 || h <= 0 {
-        return Err(MyError("Width and height must be positive.".to_string()).into());
-    }
-    Ok((w, h))
-}
-
 fn interactive_config(path_override: &Option<String>, verbose: bool) -> Result<(), Box<dyn Error>> {
     let path = resolve_config_path(path_override)?;
-    let mut config = load_config(path_override)?;
     println!("Hyprfinity: Interactive config at {}", path.display());
+    let auto = detect_auto_tune_profile();
+    let config = apply_editor_defaults(load_config(path_override)?, auto.render_scale);
 
     let span = match get_monitors(verbose) {
-        Ok(monitors) => match compute_monitor_span(&monitors) {
-            Ok((_, _, w, h)) => {
-                println!("Hyprfinity: Detected monitor span {}x{}.", w, h);
-                Some((w, h))
-            }
-            Err(e) => {
-                eprintln!("Hyprfinity: Could not compute monitor span: {}", e);
-                None
-            }
-        },
-        Err(e) => {
-            eprintln!("Hyprfinity: Could not detect monitors (continuing): {}", e);
-            None
-        }
+        Ok(monitors) => compute_monitor_span(&monitors)
+            .ok()
+            .map(|(_, _, w, h)| (w, h)),
+        Err(_) => None,
     };
 
-    println!(
-        "Output size mode:\n1) Keep current ({:?}x{:?})\n2) Use auto span\n3) Set explicit output size",
-        config.output_width, config.output_height
-    );
-    let out_mode = prompt_line("Choose output mode", "1")?;
-    match out_mode.as_str() {
-        "2" => {
-            config.output_width = None;
-            config.output_height = None;
+    match edit_config_tui("Config Editor", config, &auto.reason, span)? {
+        Some(edited) => {
+            write_config(path_override, &edited)?;
+            println!("Hyprfinity: Done. Use `hyprfinity config-show` to inspect effective values.");
         }
-        "3" => {
-            let default_output =
-                if let (Some(w), Some(h)) = (config.output_width, config.output_height) {
-                    format!("{}x{}", w, h)
-                } else if let Some((w, h)) = span {
-                    format!("{}x{}", w, h)
-                } else {
-                    "1920x1080".to_string()
-                };
-            let value = prompt_line("Output resolution (WIDTHxHEIGHT)", &default_output)?;
-            let (w, h) = parse_resolution(&value)?;
-            config.output_width = Some(w);
-            config.output_height = Some(h);
-        }
-        _ => {}
+        None => println!("Hyprfinity: Config update cancelled."),
     }
-
-    println!(
-        "Internal render mode:\n1) Keep current (scale {:?}, virtual {:?}x{:?})\n2) Use render scale\n3) Use explicit virtual size",
-        config.render_scale, config.virtual_width, config.virtual_height
-    );
-    let in_mode = prompt_line("Choose internal mode", "1")?;
-    match in_mode.as_str() {
-        "2" => {
-            let default_scale = config.render_scale.unwrap_or(1.0).to_string();
-            let value = prompt_line("Render scale (0.1 - 1.0)", &default_scale)?;
-            let mut scale: f32 = value
-                .parse()
-                .map_err(|e| MyError(format!("Invalid render scale '{}': {}", value, e)))?;
-            scale = scale.clamp(0.1, 1.0);
-            config.render_scale = Some(scale);
-            config.virtual_width = None;
-            config.virtual_height = None;
-        }
-        "3" => {
-            let default_virtual =
-                if let (Some(w), Some(h)) = (config.virtual_width, config.virtual_height) {
-                    format!("{}x{}", w, h)
-                } else {
-                    let (w, h) = span.unwrap_or((1920, 1080));
-                    format!("{}x{}", w, h)
-                };
-            let value = prompt_line("Virtual resolution (WIDTHxHEIGHT)", &default_virtual)?;
-            let (w, h) = parse_resolution(&value)?;
-            config.virtual_width = Some(w);
-            config.virtual_height = Some(h);
-        }
-        _ => {}
-    }
-
-    write_config(path_override, &config)?;
-    println!("Hyprfinity: Done. Use `hyprfinity config-show` to inspect effective values.");
     Ok(())
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+    init_debug_logging(cli.debug, &cli.debug_log)?;
     let config = load_config(&cli.config)?;
 
     match &cli.command {

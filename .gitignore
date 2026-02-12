@@ -11,3 +11,6 @@
 .Trash
 ehthumbs.db
 Thumbs.db
+
+# Hyprfinity local diagnostics
+/hyprfinity-debug.log

@@ -79,6 +79,10 @@ Generate a starter config:
 hyprfinity config-init
 ```
 
+`config-init` auto-tunes `render_scale` based on detected GPU (model/VRAM), CPU threads, RAM, and current monitor span.
+It prompts before overwrite, then opens a full-screen TUI to review/edit defaults before writing.
+Use arrow keys to change values, `s` to save, and `q`/`Esc` to cancel.
+
 Overwrite if it already exists:
 
 ```bash
@@ -103,8 +107,8 @@ Example config:
 # Default gamescope args (used when no args are provided on the CLI)
 gamescope_args = ["-r", "60"]
 
-# Default game/app command (appended if no `--` command is provided)
-default_command = ["steam", "-applaunch", "620"]
+# Optional default game/app command (appended if no `--` command is provided)
+# default_command = ["steam", "-applaunch", "620"]
 
 # Defaults for CLI flags
 no_pin = false
@@ -127,8 +131,20 @@ startup_timeout_secs = 10
 - Hyprfinity injects `-W/-H` defaults using the configured `output_width`/`output_height` when present, otherwise full monitor span.
 - Hyprfinity injects `-w/-h` defaults using internal render settings: `virtual_width`/`virtual_height` (if set), otherwise `render_scale * output_size`.
 - `hide_waybar` defaults to `true` to avoid top-bar overlay; set it to `false` if you want to keep your bar visible.
-- `hyprfinity config` is an interactive wizard for setting output size and internal render mode (scale or explicit virtual size).
+- `hyprfinity config` opens the same full-screen TUI editor for existing config values.
 - `--pick-size` opens an interactive picker that detects monitors and offers internal size presets (native span, scaled percentages, common heights like 1080p-equivalent).
 - Use `--no-pin` to avoid pinning the Gamescope window to all workspaces.
 - Use `--verbose` to show `hyprctl` debug output and Gamescope logs.
+- Use `--debug` to write diagnostics to a log file.
+  Set `HYPRFINITY_DEBUG_LOG=/path/to/log` to control the path, or use `--debug-log /path`.
+  Default path is `/var/log/hyprfinity-debug.log` with fallback to `/tmp/hyprfinity-debug.log` if needed.
 - Press Ctrl+C during `gamescope-up` to tear down the Gamescope session.
+
+## Troubleshooting
+
+- If Gamescope initially spans all monitors but later shrinks/repositions, run with:
+  `hyprfinity --debug --verbose gamescope-up ...`
+- Check the debug log for:
+  `raw monitors json`, `compute_span`, `gamescope final args`, and `reflow window selector`.
+- To force log output into this project directory:
+  `HYPRFINITY_DEBUG_LOG=/home/dustinleblanc/projects/hyprfinity/hyprfinity-debug.log hyprfinity --debug ...`
