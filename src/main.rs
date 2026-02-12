@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::{
     error::Error,
     fmt,
-    io::{self, Write},
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
     sync::Arc,
     thread,
     time::Duration,
 };
+use skim::prelude::*;
 
 #[derive(Debug)]
 struct MyError(String);
@@ -28,8 +28,11 @@ struct Cli {
     /// Enable verbose debug output.
     #[arg(long, global = true, default_value_t = false)]
     verbose: bool,
+    /// Path to a config file (TOML). Defaults to $XDG_CONFIG_HOME/hyprfinity/config.toml.
+    #[arg(long, global = true)]
+    config: Option<String>,
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -51,6 +54,27 @@ enum Commands {
     },
     /// Tear down the active Gamescope session launched by GamescopeUp.
     GamescopeDown,
+    /// Create a starter config file.
+    ConfigInit {
+        /// Overwrite existing config if present.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+    /// Print resolved config (path + values).
+    ConfigShow {
+        /// Override no-pin in effective output.
+        #[arg(long, default_value_t = false)]
+        no_pin: bool,
+        /// Override pick in effective output.
+        #[arg(long, default_value_t = false)]
+        pick: bool,
+        /// Override startup timeout in effective output.
+        #[arg(long, default_value_t = 10)]
+        startup_timeout_secs: u64,
+        /// Arguments passed to gamescope (for effective output). Use `--` to separate gamescope args.
+        #[arg(trailing_var_arg = true)]
+        gamescope_args: Vec<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -72,10 +96,121 @@ struct GamescopeState {
 }
 
 const GAMESCOPE_STATE_FILE_NAME: &str = "hyprfinity_gamescope_state.json";
+const DEFAULT_CONFIG_REL_PATH: &str = "hyprfinity/config.toml";
 
 fn get_gamescope_state_file_path() -> Result<std::path::PathBuf, Box<dyn Error>> {
     let temp_dir = std::env::temp_dir();
     Ok(temp_dir.join(GAMESCOPE_STATE_FILE_NAME))
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+struct Config {
+    gamescope_args: Option<Vec<String>>,
+    default_command: Option<Vec<String>>,
+    no_pin: Option<bool>,
+    pick: Option<bool>,
+    startup_timeout_secs: Option<u64>,
+}
+
+fn resolve_default_config_path() -> Result<std::path::PathBuf, Box<dyn Error>> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return Ok(std::path::PathBuf::from(xdg).join(DEFAULT_CONFIG_REL_PATH));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Ok(std::path::PathBuf::from(home).join(".config").join(DEFAULT_CONFIG_REL_PATH));
+    }
+    Err(MyError("Unable to resolve config path (HOME and XDG_CONFIG_HOME are unset).".to_string()).into())
+}
+
+fn load_config(path_override: &Option<String>) -> Result<Config, Box<dyn Error>> {
+    let path = if let Some(path) = path_override {
+        std::path::PathBuf::from(path)
+    } else {
+        resolve_default_config_path()?
+    };
+
+    if !path.exists() {
+        return Ok(Config::default());
+    }
+
+    let contents = std::fs::read_to_string(&path)?;
+    let config: Config = toml::from_str(&contents)
+        .map_err(|e| MyError(format!("Failed to parse config {}: {}", path.display(), e)))?;
+    Ok(config)
+}
+
+fn resolve_config_path(path_override: &Option<String>) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    if let Some(path) = path_override {
+        Ok(std::path::PathBuf::from(path))
+    } else {
+        resolve_default_config_path()
+    }
+}
+
+fn write_default_config(path_override: &Option<String>, force: bool) -> Result<(), Box<dyn Error>> {
+    let path = resolve_config_path(path_override)?;
+
+    if path.exists() && !force {
+        return Err(MyError(format!(
+            "Config already exists at {} (use --force to overwrite).",
+            path.display()
+        ))
+        .into());
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let contents = r#"# Hyprfinity config
+
+# Default gamescope args (used when no args are provided on the CLI)
+gamescope_args = ["-r", "60"]
+
+# Default game/app command (appended if no `--` command is provided)
+default_command = ["steam", "-applaunch", "620"]
+
+# Defaults for CLI flags
+no_pin = false
+pick = false
+startup_timeout_secs = 10
+"#;
+
+    std::fs::write(&path, contents)?;
+    println!("Hyprfinity: Wrote config to {}", path.display());
+    Ok(())
+}
+
+fn show_config(
+    path_override: &Option<String>,
+    cli_args: &[String],
+    cli_no_pin: bool,
+    cli_pick: bool,
+    cli_timeout: u64,
+) -> Result<(), Box<dyn Error>> {
+    let path = resolve_config_path(path_override)?;
+    let config = load_config(path_override)?;
+
+    let (args, no_pin, pick, timeout) =
+        apply_config(cli_args, cli_no_pin, cli_pick, cli_timeout, &config);
+
+    println!("Hyprfinity: Config path: {}", path.display());
+    println!("Hyprfinity: Effective values (after CLI overrides):");
+    println!("  gamescope_args = {:?}", args);
+    println!("  no_pin = {}", no_pin);
+    println!("  pick = {}", pick);
+    println!("  startup_timeout_secs = {}", timeout);
+
+    println!("Hyprfinity: Raw config values:");
+    println!("  gamescope_args = {:?}", config.gamescope_args.unwrap_or_default());
+    println!("  default_command = {:?}", config.default_command.unwrap_or_default());
+    println!("  no_pin = {}", config.no_pin.unwrap_or(false));
+    println!("  pick = {}", config.pick.unwrap_or(false));
+    println!(
+        "  startup_timeout_secs = {}",
+        config.startup_timeout_secs.unwrap_or(10)
+    );
+    Ok(())
 }
 
 fn save_gamescope_state(state: &GamescopeState) -> Result<(), Box<dyn Error>> {
@@ -332,37 +467,44 @@ fn pick_desktop_app_command() -> Result<Vec<String>, Box<dyn Error>> {
         return Err(MyError("No desktop applications found.".to_string()).into());
     }
 
-    println!("Hyprfinity: Available applications:");
-    for (idx, app) in apps.iter().enumerate() {
-        println!("{:3}. {}", idx + 1, app.name);
+    let options = SkimOptionsBuilder::default()
+        .height(Some("70%"))
+        .prompt(Some("Select app> "))
+        .reverse(true)
+        .multi(false)
+        .build()
+        .map_err(|e| MyError(format!("Failed to build skim options: {}", e)))?;
+
+    let input = apps
+        .iter()
+        .map(|app| app.name.clone())
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    let reader = SkimItemReader::default();
+    let items = reader.of_bufread(std::io::Cursor::new(input));
+
+    let selected = Skim::run_with(&options, Some(items))
+        .map(|out| out.selected_items)
+        .unwrap_or_default();
+
+    if selected.is_empty() {
+        return Err(MyError("User cancelled selection.".to_string()).into());
     }
 
-    loop {
-        print!("Select an app number (or 'q' to cancel): ");
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let input = input.trim();
-        if input.eq_ignore_ascii_case("q") {
-            return Err(MyError("User cancelled selection.".to_string()).into());
-        }
-        let Ok(choice) = input.parse::<usize>() else {
-            println!("Invalid choice. Enter a number from the list.");
-            continue;
-        };
-        if choice == 0 || choice > apps.len() {
-            println!("Out of range. Enter a number from the list.");
-            continue;
-        }
-        let app = &apps[choice - 1];
-        let exec = sanitize_exec(&app.exec);
-        let args = shell_words::split(&exec)
-            .map_err(|e| MyError(format!("Failed to parse Exec for {}: {}", app.name, e)))?;
-        if args.is_empty() {
-            return Err(MyError(format!("No executable found for {}.", app.name)).into());
-        }
-        return Ok(args);
+    let selected_name = selected[0].output().to_string();
+    let app = apps
+        .iter()
+        .find(|a| a.name == selected_name)
+        .ok_or_else(|| MyError("Selected app not found.".to_string()))?;
+
+    let exec = sanitize_exec(&app.exec);
+    let args = shell_words::split(&exec)
+        .map_err(|e| MyError(format!("Failed to parse Exec for {}: {}", app.name, e)))?;
+    if args.is_empty() {
+        return Err(MyError(format!("No executable found for {}.", app.name)).into());
     }
+    Ok(args)
 }
 
 fn ensure_game_command(mut gamescope_args: Vec<String>, pick: bool) -> Result<Vec<String>, Box<dyn Error>> {
@@ -382,6 +524,49 @@ fn ensure_game_command(mut gamescope_args: Vec<String>, pick: bool) -> Result<Ve
     }
 
     Ok(gamescope_args)
+}
+
+fn apply_config(
+    cli_args: &[String],
+    cli_no_pin: bool,
+    cli_pick: bool,
+    cli_timeout: u64,
+    config: &Config,
+) -> (Vec<String>, bool, bool, u64) {
+    let mut args = if cli_args.is_empty() {
+        config.gamescope_args.clone().unwrap_or_default()
+    } else {
+        cli_args.to_vec()
+    };
+
+    if args.is_empty() {
+        args = Vec::new();
+    }
+
+    let no_pin = if cli_no_pin {
+        true
+    } else {
+        config.no_pin.unwrap_or(false)
+    };
+
+    let pick = if cli_pick {
+        true
+    } else {
+        config.pick.unwrap_or(false)
+    };
+
+    let timeout = if cli_timeout != 10 {
+        cli_timeout
+    } else {
+        config.startup_timeout_secs.unwrap_or(10)
+    };
+
+    if config.default_command.is_some() && !args.iter().any(|a| a == "--") {
+        args.push("--".to_string());
+        args.extend(config.default_command.clone().unwrap_or_default());
+    }
+
+    (args, no_pin, pick, timeout)
 }
 
 fn gamescope_up(
@@ -495,20 +680,53 @@ fn gamescope_down() -> Result<(), Box<dyn Error>> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+    let config = load_config(&cli.config)?;
 
     match &cli.command {
-        Commands::GamescopeUp {
+        Some(Commands::GamescopeUp {
             startup_timeout_secs,
             no_pin,
             pick,
             gamescope_args,
-        } => {
+        }) => {
             println!("Hyprfinity: Launching Gamescope span session...");
-            gamescope_up(gamescope_args, *startup_timeout_secs, *no_pin, *pick, cli.verbose)
+            let (args, no_pin, pick, timeout) = apply_config(
+                gamescope_args,
+                *no_pin,
+                *pick,
+                *startup_timeout_secs,
+                &config,
+            );
+            gamescope_up(&args, timeout, no_pin, pick, cli.verbose)
         }
-        Commands::GamescopeDown => {
+        None => {
+            println!("Hyprfinity: Launching Gamescope span session...");
+            let (args, no_pin, pick, timeout) =
+                apply_config(&[], false, false, 10, &config);
+            gamescope_up(&args, timeout, no_pin, pick, cli.verbose)
+        }
+        Some(Commands::GamescopeDown) => {
             println!("Hyprfinity: Tearing down Gamescope session...");
             gamescope_down()
+        }
+        Some(Commands::ConfigInit { force }) => {
+            write_default_config(&cli.config, *force)?;
+            Ok(())
+        }
+        Some(Commands::ConfigShow {
+            no_pin,
+            pick,
+            startup_timeout_secs,
+            gamescope_args,
+        }) => {
+            show_config(
+                &cli.config,
+                gamescope_args,
+                *no_pin,
+                *pick,
+                *startup_timeout_secs,
+            )?;
+            Ok(())
         }
     }
 }
