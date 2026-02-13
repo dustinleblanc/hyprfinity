@@ -14,3 +14,8 @@ toml = "0.8"
 skim = "0.10"
 crossterm = "0.28"
 ratatui = "0.29"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.10"
