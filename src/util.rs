@@ -19,3 +19,16 @@ pub(crate) fn scaled_dimensions(span_width: i32, span_height: i32, scale: f32) -
     let h = even_floor(clamp_i32(h, 2, span_height));
     (w, h)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scaled_dimensions_rounds_and_clamps() {
+        assert_eq!(scaled_dimensions(1920, 1080, 0.5), (960, 540));
+        assert_eq!(scaled_dimensions(5, 5, 1.0), (4, 4));
+        assert_eq!(scaled_dimensions(1920, 1080, 0.0001), (2, 2));
+        assert_eq!(scaled_dimensions(1920, 1080, 1.2), (1920, 1080));
+    }
+}

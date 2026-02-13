@@ -254,3 +254,60 @@ pub(crate) fn fit_window_to_span(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Client, Monitor};
+
+    #[test]
+    fn compute_monitor_span_combines_offsets() {
+        let monitors = vec![
+            Monitor {
+                name: Some("left".to_string()),
+                width: 1920,
+                height: 1080,
+                x: -1920,
+                y: 0,
+            },
+            Monitor {
+                name: Some("right".to_string()),
+                width: 2560,
+                height: 1440,
+                x: 0,
+                y: 0,
+            },
+        ];
+        let (min_x, min_y, w, h) = compute_monitor_span(&monitors).unwrap();
+        assert_eq!(min_x, -1920);
+        assert_eq!(min_y, 0);
+        assert_eq!(w, 4480);
+        assert_eq!(h, 1440);
+    }
+
+    #[test]
+    fn primary_client_for_pid_prefers_largest_area() {
+        let clients = vec![
+            Client {
+                pid: 100,
+                address: Some("0x1".to_string()),
+                at: Some([0, 0]),
+                size: Some([800, 600]),
+            },
+            Client {
+                pid: 100,
+                address: Some("0x2".to_string()),
+                at: Some([0, 0]),
+                size: Some([1920, 1080]),
+            },
+            Client {
+                pid: 200,
+                address: Some("0x3".to_string()),
+                at: Some([0, 0]),
+                size: Some([3840, 2160]),
+            },
+        ];
+        let selected = primary_client_for_pid(&clients, 100).unwrap();
+        assert_eq!(selected.address.as_deref(), Some("0x2"));
+    }
+}

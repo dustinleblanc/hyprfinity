@@ -514,3 +514,84 @@ pub(crate) fn apply_config(
         timeout,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_config() -> Config {
+        Config {
+            gamescope_args: Some(vec!["-r".to_string(), "60".to_string()]),
+            default_command: Some(vec!["steam".to_string(), "-applaunch".to_string(), "620".to_string()]),
+            no_pin: Some(false),
+            pick: Some(false),
+            hide_waybar: Some(true),
+            pick_size: Some(false),
+            render_scale: Some(0.9),
+            virtual_width: Some(1280),
+            virtual_height: Some(720),
+            output_width: Some(3840),
+            output_height: Some(1080),
+            startup_timeout_secs: Some(15),
+        }
+    }
+
+    #[test]
+    fn apply_config_uses_config_defaults_and_appends_default_command() {
+        let config = base_config();
+        let launch = apply_config(
+            &[],
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            10,
+            &config,
+        );
+
+        assert_eq!(launch.args, vec!["-r", "60", "--", "steam", "-applaunch", "620"]);
+        assert_eq!(launch.no_pin, false);
+        assert_eq!(launch.pick, false);
+        assert_eq!(launch.hide_waybar, true);
+        assert_eq!(launch.pick_size, false);
+        assert_eq!(launch.render_scale, 0.9);
+        assert_eq!(launch.virtual_width, Some(1280));
+        assert_eq!(launch.virtual_height, Some(720));
+        assert_eq!(launch.output_width, Some(3840));
+        assert_eq!(launch.output_height, Some(1080));
+        assert_eq!(launch.timeout, 15);
+    }
+
+    #[test]
+    fn apply_config_cli_overrides_and_clamps_render_scale() {
+        let config = base_config();
+        let launch = apply_config(
+            &["-r".to_string(), "120".to_string()],
+            true,
+            true,
+            true,
+            true,
+            Some(2.0),
+            Some(1600),
+            None,
+            25,
+            &config,
+        );
+
+        assert_eq!(
+            launch.args,
+            vec!["-r", "120", "--", "steam", "-applaunch", "620"]
+        );
+        assert_eq!(launch.no_pin, true);
+        assert_eq!(launch.pick, true);
+        assert_eq!(launch.hide_waybar, true);
+        assert_eq!(launch.pick_size, true);
+        assert_eq!(launch.render_scale, 1.0);
+        assert_eq!(launch.virtual_width, Some(1600));
+        assert_eq!(launch.virtual_height, Some(720));
+        assert_eq!(launch.timeout, 25);
+    }
+}
