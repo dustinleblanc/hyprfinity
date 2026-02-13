@@ -1,6 +1,5 @@
 # Rust
 /target/
-/Cargo.lock
 
 # IDEs
 .idea/
@@ -14,3 +13,9 @@ Thumbs.db
 
 # Hyprfinity local diagnostics
 /hyprfinity-debug.log
+
+# Arch packaging artifacts
+/packaging/arch/hyprfinity/
+/packaging/arch/pkg/
+/packaging/arch/src/
+/packaging/arch/*.pkg.tar.zst
