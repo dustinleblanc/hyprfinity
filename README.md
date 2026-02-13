@@ -140,6 +140,12 @@ startup_timeout_secs = 10
   Default path is `/var/log/hyprfinity-debug.log` with fallback to `/tmp/hyprfinity-debug.log` if needed.
 - Press Ctrl+C during `gamescope-up` to tear down the Gamescope session.
 
+## Packaging
+
+- Arch Linux packaging files are provided in `packaging/arch/`.
+- See `docs/arch-packaging.md` for release and `-git` package build instructions.
+- Use `make arch-build-git-local` to build from your local checkout without fetching from GitHub.
+
 ## Troubleshooting
 
 - If Gamescope initially spans all monitors but later shrinks/repositions, run with:

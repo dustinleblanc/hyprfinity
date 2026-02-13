@@ -1,0 +1,36 @@
+pkgname=hyprfinity
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Hyprland helper to launch and manage Gamescope across monitor span"
+arch=('x86_64')
+url="https://github.com/dustinleblanc/hyprfinity"
+license=('GPL-3.0-only')
+depends=('gamescope' 'hyprland')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/$pkgname-$pkgver"
+  if [[ -f Cargo.lock ]]; then
+    cargo build --release --locked
+  else
+    cargo build --release
+  fi
+}
+
+check() {
+  cd "$srcdir/$pkgname-$pkgver"
+  if [[ -f Cargo.lock ]]; then
+    cargo test --release --locked
+  else
+    cargo test --release
+  fi
+}
+
+package() {
+  cd "$srcdir/$pkgname-$pkgver"
+  install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

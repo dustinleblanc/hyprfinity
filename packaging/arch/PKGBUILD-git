@@ -1,0 +1,59 @@
+pkgname=hyprfinity-git
+pkgver=0.0.0.r9.g44b0df6
+pkgrel=1
+pkgdesc="Hyprland helper to launch and manage Gamescope across monitor span (git)"
+arch=('x86_64')
+url="https://github.com/dustinleblanc/hyprfinity"
+license=('GPL-3.0-only')
+depends=('gamescope' 'hyprland')
+makedepends=('cargo' 'git')
+provides=('hyprfinity')
+conflicts=('hyprfinity')
+
+_repo_root="$(cd "$startdir/../.." && pwd)"
+: "${HYPRFINITY_GIT_SOURCE:=remote}"
+if [[ "$HYPRFINITY_GIT_SOURCE" == "local" ]]; then
+  source=("hyprfinity::git+file://${_repo_root}")
+else
+  source=("git+$url.git")
+fi
+
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$srcdir/hyprfinity"
+  local tag count hash
+  tag="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+  count="$(git rev-list --count HEAD)"
+  hash="$(git rev-parse --short HEAD)"
+  if [[ -n "$tag" ]]; then
+    printf "%s.r%s.g%s" "$tag" "$count" "$hash"
+  else
+    printf "0.0.0.r%s.g%s" "$count" "$hash"
+  fi
+}
+
+build() {
+  cd "$srcdir/hyprfinity"
+  if [[ -f Cargo.lock ]]; then
+    cargo build --release --locked
+  else
+    cargo build --release
+  fi
+}
+
+check() {
+  cd "$srcdir/hyprfinity"
+  if [[ -f Cargo.lock ]]; then
+    cargo test --release --locked
+  else
+    cargo test --release
+  fi
+}
+
+package() {
+  cd "$srcdir/hyprfinity"
+  install -Dm755 "target/release/hyprfinity" "$pkgdir/usr/bin/hyprfinity"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/hyprfinity/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/hyprfinity/README.md"
+}
