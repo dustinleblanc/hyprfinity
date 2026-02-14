@@ -6,6 +6,15 @@ arch=('x86_64')
 url="https://github.com/dustinleblanc/hyprfinity"
 license=('GPL-3.0-only')
 depends=('gamescope' 'hyprland')
+optdepends=(
+  'waybar: allow hide/restart behavior during gamescope sessions'
+  'kitty: preferred dedicated terminal for desktop launcher'
+  'foot: terminal fallback for desktop launcher'
+  'alacritty: terminal fallback for desktop launcher'
+  'wezterm: terminal fallback for desktop launcher'
+  'gnome-terminal: terminal fallback for desktop launcher'
+  'xterm: terminal fallback for desktop launcher'
+)
 makedepends=('cargo' 'git')
 provides=('hyprfinity')
 conflicts=('hyprfinity')
