@@ -73,6 +73,29 @@ pub(crate) fn execute_hyprctl_output(
     Ok(stdout)
 }
 
+fn normalize_bind_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
+}
+
+pub(crate) fn bind_exists(
+    mods: &str,
+    key: &str,
+    verbose: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let stdout = execute_hyprctl_output(&["binds"], verbose)?;
+    let needle = normalize_bind_token(&format!("{},{}", mods, key));
+    for line in stdout.lines() {
+        if normalize_bind_token(line).contains(&needle) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) fn get_monitors(verbose: bool) -> Result<Vec<Monitor>, Box<dyn std::error::Error>> {
     let stdout = execute_hyprctl_output(&["monitors", "-j"], verbose)?;
     debug_log_line(&format!("raw monitors json: {}", stdout.trim()));

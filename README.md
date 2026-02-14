@@ -139,6 +139,8 @@ startup_timeout_secs = 10
   Set `HYPRFINITY_DEBUG_LOG=/path/to/log` to control the path, or use `--debug-log /path`.
   Default path is `/var/log/hyprfinity-debug.log` with fallback to `/tmp/hyprfinity-debug.log` if needed.
 - Press Ctrl+C during `gamescope-up` to tear down the Gamescope session.
+- Hyprfinity attempts to bind an exit hotkey (`SUPER+SHIFT+F12`) while Gamescope is running.
+  If that hotkey is already used, Hyprfinity skips binding it.
 
 ## Packaging
 

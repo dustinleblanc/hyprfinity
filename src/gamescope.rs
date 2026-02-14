@@ -1,7 +1,7 @@
 use crate::MyError;
 use crate::debuglog::debug_log_line;
 use crate::hyprland::{
-    compute_monitor_span, execute_hyprctl, fit_window_to_span, get_monitors,
+    bind_exists, compute_monitor_span, execute_hyprctl, fit_window_to_span, get_monitors,
     get_primary_window_selector, wait_for_client_pid,
 };
 use crate::picker::{pick_desktop_app_command, pick_internal_size};
@@ -23,9 +23,19 @@ struct GamescopeState {
     span_height: i32,
     gamescope_args: Vec<String>,
     waybar_was_stopped: bool,
+    #[serde(default)]
+    exit_hotkey: Option<ExitHotkey>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ExitHotkey {
+    mods: String,
+    key: String,
 }
 
 const GAMESCOPE_STATE_FILE_NAME: &str = "hyprfinity_gamescope_state.json";
+const DEFAULT_EXIT_HOTKEY_MODS: &str = "SUPER SHIFT";
+const DEFAULT_EXIT_HOTKEY_KEY: &str = "F12";
 
 fn get_gamescope_state_file_path() -> Result<std::path::PathBuf, Box<dyn Error>> {
     let temp_dir = std::env::temp_dir();
@@ -203,6 +213,34 @@ fn maybe_start_waybar(verbose: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn register_exit_hotkey(verbose: bool) -> Result<Option<ExitHotkey>, Box<dyn Error>> {
+    let mods = DEFAULT_EXIT_HOTKEY_MODS;
+    let key = DEFAULT_EXIT_HOTKEY_KEY;
+    if bind_exists(mods, key, verbose)? {
+        println!(
+            "Hyprfinity: Exit hotkey {}+{} is already bound; skipping.",
+            mods, key
+        );
+        return Ok(None);
+    }
+
+    let binding = format!("{mods}, {key}, exec, hyprfinity gamescope-down");
+    execute_hyprctl(&["keyword", "bind", &binding], verbose)?;
+    println!(
+        "Hyprfinity: Exit hotkey bound: {}+{} (runs `hyprfinity gamescope-down`).",
+        mods, key
+    );
+    Ok(Some(ExitHotkey {
+        mods: mods.to_string(),
+        key: key.to_string(),
+    }))
+}
+
+fn unregister_exit_hotkey(hotkey: &ExitHotkey, verbose: bool) {
+    let binding = format!("{}, {}", hotkey.mods, hotkey.key);
+    let _ = execute_hyprctl(&["keyword", "unbind", &binding], verbose);
+}
+
 pub(crate) fn gamescope_up(
     gamescope_args: &[String],
     startup_timeout_secs: u64,
@@ -219,6 +257,7 @@ pub(crate) fn gamescope_up(
 ) -> Result<(), Box<dyn Error>> {
     debug_log_line("gamescope_up begin");
     let mut waybar_was_stopped = false;
+    let mut exit_hotkey: Option<ExitHotkey> = None;
 
     let result = (|| -> Result<(), Box<dyn Error>> {
         let monitors = get_monitors(verbose)?;
@@ -308,6 +347,11 @@ pub(crate) fn gamescope_up(
             execute_hyprctl(&["dispatch", "pin", &window], verbose)?;
         }
 
+        match register_exit_hotkey(verbose) {
+            Ok(hotkey) => exit_hotkey = hotkey,
+            Err(e) => eprintln!("Hyprfinity: Failed to register exit hotkey: {}", e),
+        }
+
         let state = GamescopeState {
             gamescope_pid,
             span_x,
@@ -316,6 +360,7 @@ pub(crate) fn gamescope_up(
             span_height,
             gamescope_args: final_args,
             waybar_was_stopped,
+            exit_hotkey: exit_hotkey.clone(),
         };
         save_gamescope_state(&state)?;
 
@@ -341,6 +386,9 @@ pub(crate) fn gamescope_up(
                 println!("Hyprfinity: Gamescope exited with status {}.", status);
                 if waybar_was_stopped {
                     maybe_start_waybar(verbose)?;
+                }
+                if let Some(hotkey) = exit_hotkey.as_ref() {
+                    unregister_exit_hotkey(hotkey, verbose);
                 }
                 let state_file_path = get_gamescope_state_file_path()?;
                 let _ = std::fs::remove_file(&state_file_path);
@@ -374,6 +422,11 @@ pub(crate) fn gamescope_up(
 
     if result.is_err() && waybar_was_stopped {
         let _ = maybe_start_waybar(verbose);
+    }
+    if result.is_err() {
+        if let Some(hotkey) = exit_hotkey.as_ref() {
+            unregister_exit_hotkey(hotkey, verbose);
+        }
     }
 
     result
@@ -410,6 +463,9 @@ pub(crate) fn gamescope_down() -> Result<(), Box<dyn Error>> {
     );
     if state.waybar_was_stopped {
         maybe_start_waybar(false)?;
+    }
+    if let Some(hotkey) = state.exit_hotkey.as_ref() {
+        unregister_exit_hotkey(hotkey, false);
     }
     Ok(())
 }
