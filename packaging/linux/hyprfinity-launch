@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_BIN="${HYPRFINITY_BIN:-hyprfinity}"
+APP_TITLE="${HYPRFINITY_TITLE:-Hyprfinity}"
+APP_CLASS="${HYPRFINITY_CLASS:-hyprfinity}"
+
+run_app() {
+  exec "$APP_BIN" "$@"
+}
+
+if [[ -n "${TERMINAL:-}" ]]; then
+  exec "$TERMINAL" -e "$APP_BIN" "$@"
+fi
+
+if command -v kitty >/dev/null 2>&1; then
+  exec kitty --class "$APP_CLASS" --title "$APP_TITLE" "$APP_BIN" "$@"
+fi
+
+if command -v foot >/dev/null 2>&1; then
+  exec foot --app-id "$APP_CLASS" --title "$APP_TITLE" "$APP_BIN" "$@"
+fi
+
+if command -v alacritty >/dev/null 2>&1; then
+  exec alacritty --class "$APP_CLASS","$APP_TITLE" --title "$APP_TITLE" -e "$APP_BIN" "$@"
+fi
+
+if command -v wezterm >/dev/null 2>&1; then
+  exec wezterm start --class "$APP_CLASS" -- "$APP_BIN" "$@"
+fi
+
+if command -v gnome-terminal >/dev/null 2>&1; then
+  exec gnome-terminal --title="$APP_TITLE" -- "$APP_BIN" "$@"
+fi
+
+if command -v xterm >/dev/null 2>&1; then
+  exec xterm -T "$APP_TITLE" -e "$APP_BIN" "$@"
+fi
+
+run_app "$@"

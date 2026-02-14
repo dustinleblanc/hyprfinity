@@ -1,5 +1,5 @@
 pkgname=hyprfinity-git
-pkgver=0.0.0.r9.g44b0df6
+pkgver=0.0.0.r13.gd1984ea
 pkgrel=1
 pkgdesc="Hyprland helper to launch and manage Gamescope across monitor span (git)"
 arch=('x86_64')
@@ -53,7 +53,17 @@ check() {
 
 package() {
   cd "$srcdir/hyprfinity"
+  local launcher_src="packaging/linux/hyprfinity-launch"
+  local desktop_src="packaging/linux/hyprfinity.desktop"
+  if [[ ! -f "$launcher_src" && "$HYPRFINITY_GIT_SOURCE" == "local" && -f "$_repo_root/packaging/linux/hyprfinity-launch" ]]; then
+    launcher_src="$_repo_root/packaging/linux/hyprfinity-launch"
+  fi
+  if [[ ! -f "$desktop_src" && "$HYPRFINITY_GIT_SOURCE" == "local" && -f "$_repo_root/packaging/linux/hyprfinity.desktop" ]]; then
+    desktop_src="$_repo_root/packaging/linux/hyprfinity.desktop"
+  fi
   install -Dm755 "target/release/hyprfinity" "$pkgdir/usr/bin/hyprfinity"
+  install -Dm755 "$launcher_src" "$pkgdir/usr/bin/hyprfinity-launch"
+  install -Dm644 "$desktop_src" "$pkgdir/usr/share/applications/hyprfinity.desktop"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/hyprfinity/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/hyprfinity/README.md"
 }

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Hyprfinity
+Comment=Launch Hyprfinity in a dedicated terminal
+Exec=hyprfinity-launch
+Icon=utilities-terminal
+Terminal=false
+Categories=Game;Utility;
+Keywords=hyprland;gamescope;terminal;

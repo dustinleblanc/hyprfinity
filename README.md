@@ -64,6 +64,12 @@ Run interactive configuration for output/internal sizing:
 hyprfinity config
 ```
 
+Desktop launcher:
+
+- `hyprfinity.desktop` launches `hyprfinity-launch`, which opens Hyprfinity in a dedicated terminal window.
+- Terminal selection uses `$TERMINAL` first, then common emulators (`kitty`, `foot`, `alacritty`, `wezterm`, `gnome-terminal`, `xterm`).
+- `kitty`/`foot`/`alacritty`/`wezterm` launch with class/app-id `hyprfinity` and title `Hyprfinity` for easier window rules.
+
 ## Configuration
 
 Hyprfinity reads a config file from:
