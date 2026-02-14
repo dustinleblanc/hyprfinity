@@ -29,17 +29,15 @@ startup_timeout_secs = 15
         "120",
     ]);
 
-    cmd.assert()
-        .success()
-        .stdout(
-            predicate::str::contains("Hyprfinity: Config path:")
-                .and(predicate::str::contains(config_path.to_str().unwrap()))
-                .and(predicate::str::contains(
-                    "[\"-r\", \"120\", \"--\", \"steam\", \"-applaunch\", \"620\"]",
-                ))
-                .and(predicate::str::contains("startup_timeout_secs"))
-                .and(predicate::str::contains("20"))
-                .and(predicate::str::contains("render_scale"))
-                .and(predicate::str::contains("1")),
-        );
+    cmd.assert().success().stdout(
+        predicate::str::contains("Hyprfinity: Config path:")
+            .and(predicate::str::contains(config_path.to_str().unwrap()))
+            .and(predicate::str::contains(
+                "[\"-r\", \"120\", \"--\", \"steam\", \"-applaunch\", \"620\"]",
+            ))
+            .and(predicate::str::contains("startup_timeout_secs"))
+            .and(predicate::str::contains("20"))
+            .and(predicate::str::contains("render_scale"))
+            .and(predicate::str::contains("1")),
+    );
 }

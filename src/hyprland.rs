@@ -191,18 +191,20 @@ pub(crate) fn get_primary_window_selector(
     Ok(selector)
 }
 
+type ClientGeometry = (i32, i32, i32, i32);
+
 fn get_client_geometry(
     pid: u32,
     verbose: bool,
-) -> Result<Option<(i32, i32, i32, i32)>, Box<dyn std::error::Error>> {
+) -> Result<Option<ClientGeometry>, Box<dyn std::error::Error>> {
     let stdout = execute_hyprctl_output(&["clients", "-j"], verbose)?;
     let clients: Vec<Client> = serde_json::from_str(&stdout)
         .map_err(|e| MyError(format!("Failed to parse hyprctl clients output: {}", e)))?;
     let client = primary_client_for_pid(&clients, pid);
-    if let Some(c) = client {
-        if let (Some(at), Some(size)) = (c.at, c.size) {
-            return Ok(Some((at[0], at[1], size[0], size[1])));
-        }
+    if let Some(c) = client
+        && let (Some(at), Some(size)) = (c.at, c.size)
+    {
+        return Ok(Some((at[0], at[1], size[0], size[1])));
     }
     Ok(None)
 }

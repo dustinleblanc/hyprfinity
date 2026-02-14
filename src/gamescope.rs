@@ -241,6 +241,7 @@ fn unregister_exit_hotkey(hotkey: &ExitHotkey, verbose: bool) {
     let _ = execute_hyprctl(&["keyword", "unbind", &binding], verbose);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn gamescope_up(
     gamescope_args: &[String],
     startup_timeout_secs: u64,
@@ -395,22 +396,22 @@ pub(crate) fn gamescope_up(
                 break;
             }
 
-            if reflow_tick % 2 == 0 {
-                if let Ok(window) = get_primary_window_selector(gamescope_pid, verbose) {
-                    debug_log_line(&format!("reflow window selector: {}", window));
-                    let _ = execute_hyprctl(&["dispatch", "setfloating", &window], verbose);
-                    let _ = fit_window_to_span(
-                        gamescope_pid,
-                        &window,
-                        span_x,
-                        span_y,
-                        span_width,
-                        span_height,
-                        verbose,
-                    );
-                    if !no_pin {
-                        let _ = execute_hyprctl(&["dispatch", "pin", &window], verbose);
-                    }
+            if reflow_tick.is_multiple_of(2)
+                && let Ok(window) = get_primary_window_selector(gamescope_pid, verbose)
+            {
+                debug_log_line(&format!("reflow window selector: {}", window));
+                let _ = execute_hyprctl(&["dispatch", "setfloating", &window], verbose);
+                let _ = fit_window_to_span(
+                    gamescope_pid,
+                    &window,
+                    span_x,
+                    span_y,
+                    span_width,
+                    span_height,
+                    verbose,
+                );
+                if !no_pin {
+                    let _ = execute_hyprctl(&["dispatch", "pin", &window], verbose);
                 }
             }
             reflow_tick = reflow_tick.wrapping_add(1);
@@ -423,10 +424,10 @@ pub(crate) fn gamescope_up(
     if result.is_err() && waybar_was_stopped {
         let _ = maybe_start_waybar(verbose);
     }
-    if result.is_err() {
-        if let Some(hotkey) = exit_hotkey.as_ref() {
-            unregister_exit_hotkey(hotkey, verbose);
-        }
+    if result.is_err()
+        && let Some(hotkey) = exit_hotkey.as_ref()
+    {
+        unregister_exit_hotkey(hotkey, verbose);
     }
 
     result

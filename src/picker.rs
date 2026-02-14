@@ -162,10 +162,10 @@ pub(crate) fn list_desktop_apps() -> Result<Vec<DesktopApp>, Box<dyn std::error:
                     if rest.eq_ignore_ascii_case("true") {
                         hidden = true;
                     }
-                } else if let Some(rest) = line.strip_prefix("Hidden=") {
-                    if rest.eq_ignore_ascii_case("true") {
-                        hidden = true;
-                    }
+                } else if let Some(rest) = line.strip_prefix("Hidden=")
+                    && rest.eq_ignore_ascii_case("true")
+                {
+                    hidden = true;
                 }
             }
 

@@ -369,6 +369,7 @@ pub(crate) fn write_default_config(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn show_config(
     path_override: &Option<String>,
     cli_args: &[String],
@@ -429,6 +430,7 @@ pub(crate) fn interactive_config(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_config(
     cli_args: &[String],
     cli_no_pin: bool,
@@ -522,7 +524,11 @@ mod tests {
     fn base_config() -> Config {
         Config {
             gamescope_args: Some(vec!["-r".to_string(), "60".to_string()]),
-            default_command: Some(vec!["steam".to_string(), "-applaunch".to_string(), "620".to_string()]),
+            default_command: Some(vec![
+                "steam".to_string(),
+                "-applaunch".to_string(),
+                "620".to_string(),
+            ]),
             no_pin: Some(false),
             pick: Some(false),
             hide_waybar: Some(true),
@@ -552,11 +558,14 @@ mod tests {
             &config,
         );
 
-        assert_eq!(launch.args, vec!["-r", "60", "--", "steam", "-applaunch", "620"]);
-        assert_eq!(launch.no_pin, false);
-        assert_eq!(launch.pick, false);
-        assert_eq!(launch.hide_waybar, true);
-        assert_eq!(launch.pick_size, false);
+        assert_eq!(
+            launch.args,
+            vec!["-r", "60", "--", "steam", "-applaunch", "620"]
+        );
+        assert!(!launch.no_pin);
+        assert!(!launch.pick);
+        assert!(launch.hide_waybar);
+        assert!(!launch.pick_size);
         assert_eq!(launch.render_scale, 0.9);
         assert_eq!(launch.virtual_width, Some(1280));
         assert_eq!(launch.virtual_height, Some(720));
@@ -585,10 +594,10 @@ mod tests {
             launch.args,
             vec!["-r", "120", "--", "steam", "-applaunch", "620"]
         );
-        assert_eq!(launch.no_pin, true);
-        assert_eq!(launch.pick, true);
-        assert_eq!(launch.hide_waybar, true);
-        assert_eq!(launch.pick_size, true);
+        assert!(launch.no_pin);
+        assert!(launch.pick);
+        assert!(launch.hide_waybar);
+        assert!(launch.pick_size);
         assert_eq!(launch.render_scale, 1.0);
         assert_eq!(launch.virtual_width, Some(1600));
         assert_eq!(launch.virtual_height, Some(720));

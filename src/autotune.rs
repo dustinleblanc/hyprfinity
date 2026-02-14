@@ -246,7 +246,8 @@ mod tests {
 
     #[test]
     fn gpu_scale_adjustment_large_span_penalty() {
-        let (delta, reason) = gpu_scale_adjustment(Some("Intel UHD Graphics"), None, Some(12_000_001));
+        let (delta, reason) =
+            gpu_scale_adjustment(Some("Intel UHD Graphics"), None, Some(12_000_001));
         assert!(delta < -0.12);
         assert!(reason.contains("large multi-monitor span"));
     }
