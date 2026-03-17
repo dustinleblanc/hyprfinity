@@ -236,12 +236,11 @@ pub(crate) fn edit_config_tui(
                                 let s = (config.render_scale.unwrap_or(1.0) - 0.05).clamp(0.1, 1.0);
                                 config.render_scale = Some((s * 100.0).round() / 100.0);
                             }
-                            1 => {
-                                config.idle_inhibit = Some(!config.idle_inhibit.unwrap_or(true))
-                            }
+                            1 => config.idle_inhibit = Some(!config.idle_inhibit.unwrap_or(true)),
                             2 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
                             3 => {
-                                config.overlay_enabled = Some(!config.overlay_enabled.unwrap_or(true))
+                                config.overlay_enabled =
+                                    Some(!config.overlay_enabled.unwrap_or(true))
                             }
                             4 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
                             5 => cycle_size_setting(
@@ -263,12 +262,11 @@ pub(crate) fn edit_config_tui(
                                 let s = (config.render_scale.unwrap_or(1.0) + 0.05).clamp(0.1, 1.0);
                                 config.render_scale = Some((s * 100.0).round() / 100.0);
                             }
-                            1 => {
-                                config.idle_inhibit = Some(!config.idle_inhibit.unwrap_or(true))
-                            }
+                            1 => config.idle_inhibit = Some(!config.idle_inhibit.unwrap_or(true)),
                             2 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
                             3 => {
-                                config.overlay_enabled = Some(!config.overlay_enabled.unwrap_or(true))
+                                config.overlay_enabled =
+                                    Some(!config.overlay_enabled.unwrap_or(true))
                             }
                             4 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
                             5 => cycle_size_setting(
@@ -286,12 +284,11 @@ pub(crate) fn edit_config_tui(
                             _ => {}
                         },
                         KeyCode::Enter => match selected {
-                            1 => {
-                                config.idle_inhibit = Some(!config.idle_inhibit.unwrap_or(true))
-                            }
+                            1 => config.idle_inhibit = Some(!config.idle_inhibit.unwrap_or(true)),
                             2 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
                             3 => {
-                                config.overlay_enabled = Some(!config.overlay_enabled.unwrap_or(true))
+                                config.overlay_enabled =
+                                    Some(!config.overlay_enabled.unwrap_or(true))
                             }
                             4 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
                             5 => cycle_size_setting(

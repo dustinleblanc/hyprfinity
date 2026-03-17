@@ -1,5 +1,5 @@
 pkgname=hyprfinity-git
-pkgver=0.1.1.r19.g911ed89
+pkgver=0.2.0.r21.g19587e4
 pkgrel=1
 pkgdesc="Hyprland helper to launch and manage Gamescope across monitor span (git)"
 arch=('x86_64')

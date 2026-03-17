@@ -706,10 +706,7 @@ mod tests {
         assert!(launch.hide_waybar);
         assert!(launch.pick_size);
         assert!(!launch.overlay_enabled);
-        assert_eq!(
-            launch.mangohud_config,
-            Some("custom_text=Exit".to_string())
-        );
+        assert_eq!(launch.mangohud_config, Some("custom_text=Exit".to_string()));
         assert_eq!(launch.render_scale, 1.0);
         assert_eq!(launch.virtual_width, Some(1600));
         assert_eq!(launch.virtual_height, Some(720));
