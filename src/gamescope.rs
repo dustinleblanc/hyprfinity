@@ -415,10 +415,8 @@ pub(crate) fn gamescope_up(
 
         let mut cmd = Command::new("gamescope");
         cmd.args(&final_args);
-        if overlay_enabled {
-            if let Some(config) = mangohud_config.clone() {
-                cmd.env("MANGOHUD_CONFIG", config);
-            }
+        if overlay_enabled && let Some(config) = mangohud_config.clone() {
+            cmd.env("MANGOHUD_CONFIG", config);
         }
         if !verbose {
             cmd.stdout(Stdio::null()).stderr(Stdio::null());

@@ -26,19 +26,19 @@ pub(crate) fn command_in_path(cmd: &str) -> bool {
     };
     for path in std::env::split_paths(&paths) {
         let candidate = path.join(cmd);
-        if let Ok(meta) = std::fs::metadata(&candidate) {
-            if meta.is_file() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if meta.permissions().mode() & 0o111 != 0 {
-                        return true;
-                    }
-                }
-                #[cfg(not(unix))]
-                {
+        if let Ok(meta) = std::fs::metadata(&candidate)
+            && meta.is_file()
+        {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if meta.permissions().mode() & 0o111 != 0 {
                     return true;
                 }
+            }
+            #[cfg(not(unix))]
+            {
+                return true;
             }
         }
     }
