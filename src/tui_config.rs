@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, DEFAULT_MANGOHUD_CONFIG};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -33,11 +33,20 @@ pub(crate) fn apply_editor_defaults(mut config: Config, auto_scale: f32) -> Conf
     if config.pick.is_none() {
         config.pick = Some(false);
     }
+    if config.idle_inhibit.is_none() {
+        config.idle_inhibit = Some(true);
+    }
     if config.hide_waybar.is_none() {
         config.hide_waybar = Some(true);
     }
     if config.pick_size.is_none() {
         config.pick_size = Some(false);
+    }
+    if config.overlay_enabled.is_none() {
+        config.overlay_enabled = Some(true);
+    }
+    if config.mangohud_config.is_none() {
+        config.mangohud_config = Some(DEFAULT_MANGOHUD_CONFIG.to_string());
     }
     if config.render_scale.is_none() {
         config.render_scale = Some(auto_scale);
@@ -150,8 +159,16 @@ pub(crate) fn edit_config_tui(
                         format!("{:.2}", config.render_scale.unwrap_or(1.0)),
                     ),
                     (
+                        "idle_inhibit",
+                        config.idle_inhibit.unwrap_or(true).to_string(),
+                    ),
+                    (
                         "hide_waybar",
                         config.hide_waybar.unwrap_or(true).to_string(),
+                    ),
+                    (
+                        "overlay_enabled",
+                        config.overlay_enabled.unwrap_or(true).to_string(),
                     ),
                     ("pick_size", config.pick_size.unwrap_or(false).to_string()),
                     (
@@ -210,24 +227,30 @@ pub(crate) fn edit_config_tui(
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
                         KeyCode::Char('s') => return Ok(Some(config.clone())),
-                        KeyCode::Down => selected = (selected + 1) % 7,
+                        KeyCode::Down => selected = (selected + 1) % 9,
                         KeyCode::Up => {
-                            selected = if selected == 0 { 6 } else { selected - 1 };
+                            selected = if selected == 0 { 8 } else { selected - 1 };
                         }
                         KeyCode::Left => match selected {
                             0 => {
                                 let s = (config.render_scale.unwrap_or(1.0) - 0.05).clamp(0.1, 1.0);
                                 config.render_scale = Some((s * 100.0).round() / 100.0);
                             }
-                            1 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
-                            2 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
-                            3 => cycle_size_setting(
+                            1 => {
+                                config.idle_inhibit = Some(!config.idle_inhibit.unwrap_or(true))
+                            }
+                            2 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
+                            3 => {
+                                config.overlay_enabled = Some(!config.overlay_enabled.unwrap_or(true))
+                            }
+                            4 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
+                            5 => cycle_size_setting(
                                 &mut config.output_width,
                                 &mut config.output_height,
                                 &output_opts,
                                 false,
                             ),
-                            4 => cycle_size_setting(
+                            6 => cycle_size_setting(
                                 &mut config.virtual_width,
                                 &mut config.virtual_height,
                                 &virtual_opts,
@@ -240,15 +263,21 @@ pub(crate) fn edit_config_tui(
                                 let s = (config.render_scale.unwrap_or(1.0) + 0.05).clamp(0.1, 1.0);
                                 config.render_scale = Some((s * 100.0).round() / 100.0);
                             }
-                            1 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
-                            2 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
-                            3 => cycle_size_setting(
+                            1 => {
+                                config.idle_inhibit = Some(!config.idle_inhibit.unwrap_or(true))
+                            }
+                            2 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
+                            3 => {
+                                config.overlay_enabled = Some(!config.overlay_enabled.unwrap_or(true))
+                            }
+                            4 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
+                            5 => cycle_size_setting(
                                 &mut config.output_width,
                                 &mut config.output_height,
                                 &output_opts,
                                 true,
                             ),
-                            4 => cycle_size_setting(
+                            6 => cycle_size_setting(
                                 &mut config.virtual_width,
                                 &mut config.virtual_height,
                                 &virtual_opts,
@@ -257,22 +286,28 @@ pub(crate) fn edit_config_tui(
                             _ => {}
                         },
                         KeyCode::Enter => match selected {
-                            1 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
-                            2 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
-                            3 => cycle_size_setting(
+                            1 => {
+                                config.idle_inhibit = Some(!config.idle_inhibit.unwrap_or(true))
+                            }
+                            2 => config.hide_waybar = Some(!config.hide_waybar.unwrap_or(true)),
+                            3 => {
+                                config.overlay_enabled = Some(!config.overlay_enabled.unwrap_or(true))
+                            }
+                            4 => config.pick_size = Some(!config.pick_size.unwrap_or(false)),
+                            5 => cycle_size_setting(
                                 &mut config.output_width,
                                 &mut config.output_height,
                                 &output_opts,
                                 true,
                             ),
-                            4 => cycle_size_setting(
+                            6 => cycle_size_setting(
                                 &mut config.virtual_width,
                                 &mut config.virtual_height,
                                 &virtual_opts,
                                 true,
                             ),
-                            5 => return Ok(Some(config.clone())),
-                            6 => return Ok(None),
+                            7 => return Ok(Some(config.clone())),
+                            8 => return Ok(None),
                             _ => {}
                         },
                         _ => {}

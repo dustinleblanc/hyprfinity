@@ -32,12 +32,24 @@ pub(crate) enum Commands {
         /// Open an interactive picker even if a game/app command is provided.
         #[arg(long, default_value_t = false)]
         pick: bool,
+        /// Inhibit idle/screen blanking while Gamescope is active.
+        #[arg(long, default_value_t = false)]
+        idle_inhibit: bool,
         /// Stop Waybar while Gamescope is active, then restore it on exit.
         #[arg(long, default_value_t = false)]
         hide_waybar: bool,
         /// Open an interactive picker for internal (virtual) render size.
         #[arg(long, default_value_t = false)]
         pick_size: bool,
+        /// Enable overlay support (MangoHud via gamescope --mangoapp).
+        #[arg(long, default_value_t = false)]
+        overlay: bool,
+        /// Disable overlay support (overrides config default).
+        #[arg(long, default_value_t = false)]
+        no_overlay: bool,
+        /// Override MangoHud config string (applies when overlay is enabled).
+        #[arg(long)]
+        mangohud_config: Option<String>,
         /// Scale internal (virtual) render size relative to monitor span (e.g. 0.75 for 75%).
         #[arg(long)]
         render_scale: Option<f32>,
@@ -69,12 +81,24 @@ pub(crate) enum Commands {
         /// Override pick in effective output.
         #[arg(long, default_value_t = false)]
         pick: bool,
+        /// Override idle-inhibit in effective output.
+        #[arg(long, default_value_t = false)]
+        idle_inhibit: bool,
         /// Override hide-waybar in effective output.
         #[arg(long, default_value_t = false)]
         hide_waybar: bool,
         /// Override pick-size in effective output.
         #[arg(long, default_value_t = false)]
         pick_size: bool,
+        /// Override overlay enable in effective output.
+        #[arg(long, default_value_t = false)]
+        overlay: bool,
+        /// Override overlay disable in effective output.
+        #[arg(long, default_value_t = false)]
+        no_overlay: bool,
+        /// Override MangoHud config string in effective output.
+        #[arg(long)]
+        mangohud_config: Option<String>,
         /// Override render scale in effective output.
         #[arg(long)]
         render_scale: Option<f32>,

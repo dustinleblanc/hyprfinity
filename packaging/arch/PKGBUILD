@@ -1,11 +1,11 @@
 pkgname=hyprfinity
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Hyprland helper to launch and manage Gamescope across monitor span"
 arch=('x86_64')
 url="https://github.com/dustinleblanc/hyprfinity"
 license=('GPL-3.0-only')
-depends=('gamescope' 'hyprland')
+depends=('gamescope' 'hyprland' 'mangohud')
 optdepends=(
   'waybar: allow hide/restart behavior during gamescope sessions'
   'kitty: preferred dedicated terminal for desktop launcher'

@@ -7,6 +7,7 @@ Hyprfinity is a small CLI helper for Hyprland that launches a Gamescope session 
 - Hyprland (Wayland)
 - `hyprctl` available in `PATH`
 - `gamescope` available in `PATH`
+- `mangoapp` (from MangoHud) available in `PATH` for overlays (default on)
 
 ## Usage
 
@@ -32,6 +33,12 @@ Force the picker even if a command is provided:
 
 ```bash
 hyprfinity gamescope-up --pick -- -- steam -applaunch 620
+```
+
+Inhibit idle/screen blanking while Gamescope runs:
+
+```bash
+hyprfinity gamescope-up --idle-inhibit -- -- steam -applaunch 620
 ```
 
 Hide Waybar while Gamescope runs (restored on exit):
@@ -119,8 +126,12 @@ gamescope_args = ["-r", "60"]
 # Defaults for CLI flags
 no_pin = false
 pick = false
+idle_inhibit = true
 hide_waybar = true
 pick_size = false
+overlay_enabled = true
+# MangoHud overlay config string (applied when overlay is enabled).
+mangohud_config = "read_cfg,custom_text_center=Exit: SUPER+SHIFT+F12,fps,gpu_stats=0,cpu_stats=0,frame_timing=0"
 # Internal render scale relative to output span; 1.0 = native span.
 render_scale = 1.0
 # Optional explicit internal render size (when set, these take precedence over render_scale).
@@ -137,8 +148,10 @@ startup_timeout_secs = 10
 - Hyprfinity injects `-W/-H` defaults using the configured `output_width`/`output_height` when present, otherwise full monitor span.
 - Hyprfinity injects `-w/-h` defaults using internal render settings: `virtual_width`/`virtual_height` (if set), otherwise `render_scale * output_size`.
 - `hide_waybar` defaults to `true` to avoid top-bar overlay; set it to `false` if you want to keep your bar visible.
+- `idle_inhibit` uses `systemd-inhibit` to block idle while Gamescope runs (requires `systemd-inhibit` in `PATH`).
 - `hyprfinity config` opens the same full-screen TUI editor for existing config values.
 - `--pick-size` opens an interactive picker that detects monitors and offers internal size presets (native span, scaled percentages, common heights like 1080p-equivalent).
+- `overlay_enabled` defaults to `true` and injects `--mangoapp` plus `MANGOHUD_CONFIG` for MangoHud overlays.
 - Use `--no-pin` to avoid pinning the Gamescope window to all workspaces.
 - Use `--verbose` to show `hyprctl` debug output and Gamescope logs.
 - Use `--debug` to write diagnostics to a log file.

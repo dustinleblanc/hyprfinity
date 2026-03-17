@@ -20,6 +20,31 @@ pub(crate) fn scaled_dimensions(span_width: i32, span_height: i32, scale: f32) -
     (w, h)
 }
 
+pub(crate) fn command_in_path(cmd: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for path in std::env::split_paths(&paths) {
+        let candidate = path.join(cmd);
+        if let Ok(meta) = std::fs::metadata(&candidate) {
+            if meta.is_file() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if meta.permissions().mode() & 0o111 != 0 {
+                        return true;
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

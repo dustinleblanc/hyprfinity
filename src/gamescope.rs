@@ -5,7 +5,7 @@ use crate::hyprland::{
     get_primary_window_selector, wait_for_client_pid,
 };
 use crate::picker::{pick_desktop_app_command, pick_internal_size};
-use crate::util::{clamp_i32, even_floor, scaled_dimensions};
+use crate::util::{clamp_i32, command_in_path, even_floor, scaled_dimensions};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::process::{Command, Stdio};
@@ -23,6 +23,8 @@ struct GamescopeState {
     span_height: i32,
     gamescope_args: Vec<String>,
     waybar_was_stopped: bool,
+    #[serde(default)]
+    idle_inhibit_pid: Option<u32>,
     #[serde(default)]
     exit_hotkey: Option<ExitHotkey>,
 }
@@ -105,6 +107,26 @@ fn build_gamescope_args_with_internal(
         pre.push(internal_height.to_string());
     }
 
+    pre.extend(post);
+    pre
+}
+
+fn ensure_gamescope_flag(args: Vec<String>, flag: &str) -> Vec<String> {
+    if has_arg(&args, flag) {
+        return args;
+    }
+
+    let mut pre: Vec<String> = Vec::new();
+    let mut post: Vec<String> = Vec::new();
+
+    if let Some(idx) = args.iter().position(|a| a == "--") {
+        pre.extend(args[..idx].iter().cloned());
+        post.extend(args[idx..].iter().cloned());
+    } else {
+        pre.extend(args.iter().cloned());
+    }
+
+    pre.push(flag.to_string());
     pre.extend(post);
     pre
 }
@@ -213,6 +235,62 @@ fn maybe_start_waybar(verbose: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn maybe_start_idle_inhibit(verbose: bool) -> Result<Option<u32>, Box<dyn Error>> {
+    let mut cmd = Command::new("systemd-inhibit");
+    cmd.args([
+        "--what=idle",
+        "--mode=block",
+        "--who=Hyprfinity",
+        "--why=Prevent idle during Gamescope session",
+        "--",
+        "/bin/sh",
+        "-c",
+        "while true; do sleep 3600; done",
+    ]);
+    if !verbose {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    match cmd.spawn() {
+        Ok(child) => {
+            if verbose {
+                println!(
+                    "Hyprfinity (DEBUG): Started idle inhibitor (systemd-inhibit PID {}).",
+                    child.id()
+                );
+            }
+            Ok(Some(child.id()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "Hyprfinity: idle inhibit requested, but systemd-inhibit was not found in PATH."
+            );
+            Ok(None)
+        }
+        Err(e) => Err(MyError(format!("Failed to start idle inhibitor: {}", e)).into()),
+    }
+}
+
+fn maybe_stop_idle_inhibit(pid: u32, verbose: bool) {
+    match Command::new("kill").arg(pid.to_string()).status() {
+        Ok(status) => {
+            if verbose {
+                println!(
+                    "Hyprfinity (DEBUG): Stopped idle inhibitor PID {} (status {}).",
+                    pid, status
+                );
+            }
+        }
+        Err(e) => {
+            if verbose {
+                eprintln!(
+                    "Hyprfinity (DEBUG): Failed to stop idle inhibitor PID {}: {}",
+                    pid, e
+                );
+            }
+        }
+    }
+}
+
 fn register_exit_hotkey(verbose: bool) -> Result<Option<ExitHotkey>, Box<dyn Error>> {
     let mods = DEFAULT_EXIT_HOTKEY_MODS;
     let key = DEFAULT_EXIT_HOTKEY_KEY;
@@ -247,8 +325,11 @@ pub(crate) fn gamescope_up(
     startup_timeout_secs: u64,
     no_pin: bool,
     pick: bool,
+    idle_inhibit: bool,
     hide_waybar: bool,
     pick_size: bool,
+    overlay_enabled: bool,
+    mangohud_config: Option<String>,
     render_scale: f32,
     virtual_width: Option<i32>,
     virtual_height: Option<i32>,
@@ -259,6 +340,8 @@ pub(crate) fn gamescope_up(
     debug_log_line("gamescope_up begin");
     let mut waybar_was_stopped = false;
     let mut exit_hotkey: Option<ExitHotkey> = None;
+    let mut idle_inhibit_pid: Option<u32> = None;
+    let mut overlay_enabled = overlay_enabled;
 
     let result = (|| -> Result<(), Box<dyn Error>> {
         let monitors = get_monitors(verbose)?;
@@ -274,6 +357,15 @@ pub(crate) fn gamescope_up(
         ));
 
         let gamescope_args = ensure_game_command(gamescope_args.to_vec(), pick)?;
+        if overlay_enabled && !command_in_path("mangoapp") {
+            debug_log_line("overlay disabled: mangoapp not found in PATH");
+            overlay_enabled = false;
+        }
+        let gamescope_args = if overlay_enabled {
+            ensure_gamescope_flag(gamescope_args, "--mangoapp")
+        } else {
+            gamescope_args
+        };
         let output = derive_output_size(span_width, span_height, output_width, output_height);
         debug_log_line(&format!(
             "derived output size={}x{} from span={}x{} with config output={:?}x{:?}",
@@ -304,6 +396,9 @@ pub(crate) fn gamescope_up(
         if hide_waybar {
             waybar_was_stopped = maybe_stop_waybar(verbose)?;
         }
+        if idle_inhibit {
+            idle_inhibit_pid = maybe_start_idle_inhibit(verbose)?;
+        }
 
         let final_args = build_gamescope_args_with_internal(
             &gamescope_args,
@@ -320,6 +415,11 @@ pub(crate) fn gamescope_up(
 
         let mut cmd = Command::new("gamescope");
         cmd.args(&final_args);
+        if overlay_enabled {
+            if let Some(config) = mangohud_config.clone() {
+                cmd.env("MANGOHUD_CONFIG", config);
+            }
+        }
         if !verbose {
             cmd.stdout(Stdio::null()).stderr(Stdio::null());
         }
@@ -361,6 +461,7 @@ pub(crate) fn gamescope_up(
             span_height,
             gamescope_args: final_args,
             waybar_was_stopped,
+            idle_inhibit_pid,
             exit_hotkey: exit_hotkey.clone(),
         };
         save_gamescope_state(&state)?;
@@ -385,6 +486,9 @@ pub(crate) fn gamescope_up(
         loop {
             if let Ok(Some(status)) = child.try_wait() {
                 println!("Hyprfinity: Gamescope exited with status {}.", status);
+                if let Some(pid) = idle_inhibit_pid {
+                    maybe_stop_idle_inhibit(pid, verbose);
+                }
                 if waybar_was_stopped {
                     maybe_start_waybar(verbose)?;
                 }
@@ -423,6 +527,11 @@ pub(crate) fn gamescope_up(
 
     if result.is_err() && waybar_was_stopped {
         let _ = maybe_start_waybar(verbose);
+    }
+    if result.is_err()
+        && let Some(pid) = idle_inhibit_pid
+    {
+        maybe_stop_idle_inhibit(pid, verbose);
     }
     if result.is_err()
         && let Some(hotkey) = exit_hotkey.as_ref()
@@ -464,6 +573,9 @@ pub(crate) fn gamescope_down() -> Result<(), Box<dyn Error>> {
     );
     if state.waybar_was_stopped {
         maybe_start_waybar(false)?;
+    }
+    if let Some(pid) = state.idle_inhibit_pid {
+        maybe_stop_idle_inhibit(pid, false);
     }
     if let Some(hotkey) = state.exit_hotkey.as_ref() {
         unregister_exit_hotkey(hotkey, false);

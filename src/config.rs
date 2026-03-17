@@ -15,8 +15,11 @@ pub(crate) struct Config {
     pub(crate) default_command: Option<Vec<String>>,
     pub(crate) no_pin: Option<bool>,
     pub(crate) pick: Option<bool>,
+    pub(crate) idle_inhibit: Option<bool>,
     pub(crate) hide_waybar: Option<bool>,
     pub(crate) pick_size: Option<bool>,
+    pub(crate) overlay_enabled: Option<bool>,
+    pub(crate) mangohud_config: Option<String>,
     pub(crate) render_scale: Option<f32>,
     pub(crate) virtual_width: Option<i32>,
     pub(crate) virtual_height: Option<i32>,
@@ -30,8 +33,11 @@ pub(crate) struct LaunchSettings {
     pub(crate) args: Vec<String>,
     pub(crate) no_pin: bool,
     pub(crate) pick: bool,
+    pub(crate) idle_inhibit: bool,
     pub(crate) hide_waybar: bool,
     pub(crate) pick_size: bool,
+    pub(crate) overlay_enabled: bool,
+    pub(crate) mangohud_config: Option<String>,
     pub(crate) render_scale: f32,
     pub(crate) virtual_width: Option<i32>,
     pub(crate) virtual_height: Option<i32>,
@@ -39,6 +45,9 @@ pub(crate) struct LaunchSettings {
     pub(crate) output_height: Option<i32>,
     pub(crate) timeout: u64,
 }
+
+pub(crate) const DEFAULT_MANGOHUD_CONFIG: &str =
+    "read_cfg,custom_text_center=Exit: SUPER+SHIFT+F12,fps,gpu_stats=0,cpu_stats=0,frame_timing=0";
 
 fn resolve_default_config_path() -> Result<std::path::PathBuf, Box<dyn Error>> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
@@ -88,8 +97,11 @@ fn default_config_values(auto: &AutoTuneProfile) -> Config {
         default_command: None,
         no_pin: Some(false),
         pick: Some(false),
+        idle_inhibit: Some(true),
         hide_waybar: Some(true),
         pick_size: Some(false),
+        overlay_enabled: Some(true),
+        mangohud_config: Some(DEFAULT_MANGOHUD_CONFIG.to_string()),
         render_scale: Some(auto.render_scale),
         virtual_width: None,
         virtual_height: None,
@@ -119,8 +131,14 @@ fn render_config_template(config: &Config, auto_reason: &str) -> String {
         .unwrap_or_else(|| "# default_command = [\"steam\", \"-applaunch\", \"620\"]".to_string());
     let no_pin = config.no_pin.unwrap_or(false);
     let pick = config.pick.unwrap_or(false);
+    let idle_inhibit = config.idle_inhibit.unwrap_or(true);
     let hide_waybar = config.hide_waybar.unwrap_or(true);
     let pick_size = config.pick_size.unwrap_or(false);
+    let overlay_enabled = config.overlay_enabled.unwrap_or(true);
+    let mangohud_config = config
+        .mangohud_config
+        .clone()
+        .unwrap_or_else(|| DEFAULT_MANGOHUD_CONFIG.to_string());
     let render_scale = config.render_scale.unwrap_or(1.0);
     let startup_timeout_secs = config.startup_timeout_secs.unwrap_or(10);
 
@@ -153,8 +171,13 @@ gamescope_args = [{gamescope_args}]
 # Defaults for CLI flags
 no_pin = {no_pin}
 pick = {pick}
+# Inhibit idle/screen blanking while Gamescope runs (uses systemd-inhibit).
+idle_inhibit = {idle_inhibit}
 hide_waybar = {hide_waybar}
 pick_size = {pick_size}
+overlay_enabled = {overlay_enabled}
+# MangoHud overlay config string (applied when overlay is enabled).
+mangohud_config = "{mangohud_config}"
 # Internal render scale relative to output span; 1.0 = native span.
 # {auto_reason}
 render_scale = {render_scale}
@@ -170,8 +193,11 @@ startup_timeout_secs = {startup_timeout_secs}
         default_command_line = default_command_line,
         no_pin = no_pin,
         pick = pick,
+        idle_inhibit = idle_inhibit,
         hide_waybar = hide_waybar,
         pick_size = pick_size,
+        overlay_enabled = overlay_enabled,
+        mangohud_config = mangohud_config,
         auto_reason = auto_reason,
         render_scale = render_scale,
         virtual_width_line = virtual_width_line,
@@ -267,10 +293,25 @@ fn print_config_table(title: &str, config: &Config) {
             ("no_pin", config.no_pin.unwrap_or(false).to_string()),
             ("pick", config.pick.unwrap_or(false).to_string()),
             (
+                "idle_inhibit",
+                config.idle_inhibit.unwrap_or(true).to_string(),
+            ),
+            (
                 "hide_waybar",
                 config.hide_waybar.unwrap_or(true).to_string(),
             ),
             ("pick_size", config.pick_size.unwrap_or(false).to_string()),
+            (
+                "overlay_enabled",
+                config.overlay_enabled.unwrap_or(true).to_string(),
+            ),
+            (
+                "mangohud_config",
+                config
+                    .mangohud_config
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_MANGOHUD_CONFIG.to_string()),
+            ),
             (
                 "render_scale",
                 config.render_scale.unwrap_or(1.0).to_string(),
@@ -298,8 +339,14 @@ fn print_effective_launch_table(title: &str, launch: &LaunchSettings) {
             ("gamescope_args", format!("{:?}", launch.args)),
             ("no_pin", launch.no_pin.to_string()),
             ("pick", launch.pick.to_string()),
+            ("idle_inhibit", launch.idle_inhibit.to_string()),
             ("hide_waybar", launch.hide_waybar.to_string()),
             ("pick_size", launch.pick_size.to_string()),
+            ("overlay_enabled", launch.overlay_enabled.to_string()),
+            (
+                "mangohud_config",
+                launch.mangohud_config.clone().unwrap_or_default(),
+            ),
             ("render_scale", launch.render_scale.to_string()),
             (
                 "virtual_size",
@@ -375,8 +422,12 @@ pub(crate) fn show_config(
     cli_args: &[String],
     cli_no_pin: bool,
     cli_pick: bool,
+    cli_idle_inhibit: bool,
     cli_hide_waybar: bool,
     cli_pick_size: bool,
+    cli_overlay: bool,
+    cli_no_overlay: bool,
+    cli_mangohud_config: Option<String>,
     cli_render_scale: Option<f32>,
     cli_virtual_width: Option<i32>,
     cli_virtual_height: Option<i32>,
@@ -389,8 +440,12 @@ pub(crate) fn show_config(
         cli_args,
         cli_no_pin,
         cli_pick,
+        cli_idle_inhibit,
         cli_hide_waybar,
         cli_pick_size,
+        cli_overlay,
+        cli_no_overlay,
+        cli_mangohud_config,
         cli_render_scale,
         cli_virtual_width,
         cli_virtual_height,
@@ -435,8 +490,12 @@ pub(crate) fn apply_config(
     cli_args: &[String],
     cli_no_pin: bool,
     cli_pick: bool,
+    cli_idle_inhibit: bool,
     cli_hide_waybar: bool,
     cli_pick_size: bool,
+    cli_overlay: bool,
+    cli_no_overlay: bool,
+    cli_mangohud_config: Option<String>,
     cli_render_scale: Option<f32>,
     cli_virtual_width: Option<i32>,
     cli_virtual_height: Option<i32>,
@@ -465,6 +524,12 @@ pub(crate) fn apply_config(
         config.pick.unwrap_or(false)
     };
 
+    let idle_inhibit = if cli_idle_inhibit {
+        true
+    } else {
+        config.idle_inhibit.unwrap_or(true)
+    };
+
     let hide_waybar = if cli_hide_waybar {
         true
     } else {
@@ -475,6 +540,27 @@ pub(crate) fn apply_config(
         true
     } else {
         config.pick_size.unwrap_or(false)
+    };
+
+    let overlay_enabled = if cli_no_overlay {
+        false
+    } else if cli_overlay {
+        true
+    } else {
+        config.overlay_enabled.unwrap_or(true)
+    };
+
+    let mangohud_config = if let Some(value) = cli_mangohud_config {
+        Some(value)
+    } else if overlay_enabled {
+        Some(
+            config
+                .mangohud_config
+                .clone()
+                .unwrap_or_else(|| DEFAULT_MANGOHUD_CONFIG.to_string()),
+        )
+    } else {
+        None
     };
 
     let mut render_scale = cli_render_scale.or(config.render_scale).unwrap_or(1.0);
@@ -506,8 +592,11 @@ pub(crate) fn apply_config(
         args,
         no_pin,
         pick,
+        idle_inhibit,
         hide_waybar,
         pick_size,
+        overlay_enabled,
+        mangohud_config,
         render_scale,
         virtual_width,
         virtual_height,
@@ -531,8 +620,11 @@ mod tests {
             ]),
             no_pin: Some(false),
             pick: Some(false),
+            idle_inhibit: Some(true),
             hide_waybar: Some(true),
             pick_size: Some(false),
+            overlay_enabled: Some(true),
+            mangohud_config: Some(DEFAULT_MANGOHUD_CONFIG.to_string()),
             render_scale: Some(0.9),
             virtual_width: Some(1280),
             virtual_height: Some(720),
@@ -551,6 +643,10 @@ mod tests {
             false,
             false,
             false,
+            false,
+            false,
+            false,
+            None,
             None,
             None,
             None,
@@ -564,8 +660,14 @@ mod tests {
         );
         assert!(!launch.no_pin);
         assert!(!launch.pick);
+        assert!(launch.idle_inhibit);
         assert!(launch.hide_waybar);
         assert!(!launch.pick_size);
+        assert!(launch.overlay_enabled);
+        assert_eq!(
+            launch.mangohud_config,
+            Some(DEFAULT_MANGOHUD_CONFIG.to_string())
+        );
         assert_eq!(launch.render_scale, 0.9);
         assert_eq!(launch.virtual_width, Some(1280));
         assert_eq!(launch.virtual_height, Some(720));
@@ -583,6 +685,10 @@ mod tests {
             true,
             true,
             true,
+            true,
+            false,
+            true,
+            Some("custom_text=Exit".to_string()),
             Some(2.0),
             Some(1600),
             None,
@@ -596,8 +702,14 @@ mod tests {
         );
         assert!(launch.no_pin);
         assert!(launch.pick);
+        assert!(launch.idle_inhibit);
         assert!(launch.hide_waybar);
         assert!(launch.pick_size);
+        assert!(!launch.overlay_enabled);
+        assert_eq!(
+            launch.mangohud_config,
+            Some("custom_text=Exit".to_string())
+        );
         assert_eq!(launch.render_scale, 1.0);
         assert_eq!(launch.virtual_width, Some(1600));
         assert_eq!(launch.virtual_height, Some(720));
